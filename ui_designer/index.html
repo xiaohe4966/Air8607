@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Air8607 UI Studio - 在线设计 9/10 寸 1024x600 AirUI 界面并生成可烧录的 LuatOS 工程">
+  <title>Air8607 UI Studio</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">A</div>
+        <div class="brand-text">
+          <div class="brand-title">Air8607 UI Studio</div>
+          <div class="brand-sub">1024 × 600 · AirUI · LuatOS</div>
+        </div>
+      </div>
+
+      <div class="topbar-center">
+        <label class="inline-field">
+          <span>项目</span>
+          <input id="projectName" type="text" maxlength="48" spellcheck="false" title="项目名，会写入 PROJECT 和 ZIP 文件名">
+        </label>
+        <label class="inline-field">
+          <span>屏幕</span>
+          <select id="screenPreset" title="9 寸和 10 寸均为 1024×600，生成代码里的 SCREEN_SIZE 不同">
+            <option value="9">9 寸 · 1024×600</option>
+            <option value="10">10 寸 · 1024×600</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="topbar-actions">
+        <button id="undoBtn" class="icon-btn" title="撤销 (⌘Z)" aria-label="撤销">↶</button>
+        <button id="redoBtn" class="icon-btn" title="重做 (⇧⌘Z)" aria-label="重做">↷</button>
+        <span class="topbar-sep"></span>
+        <button id="importBtn" class="ghost-btn" title="导入设计稿 JSON">导入</button>
+        <button id="exportJsonBtn" class="ghost-btn" title="导出设计稿 JSON">导出 JSON</button>
+        <button id="helpBtn" class="icon-btn" title="帮助">?</button>
+        <button id="previewBtn" class="ghost-btn" title="隐藏选择框，预览界面">预览</button>
+        <button id="exportZipBtn" class="primary-btn" title="生成可烧录的 Lua 工程 ZIP">导出工程 ZIP</button>
+        <a id="githubLink" class="ghost-btn github-link" href="#" target="_blank" rel="noopener" title="GitHub 仓库">GitHub</a>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar left-sidebar">
+        <div class="sidebar-section">
+          <div class="section-head">
+            <span class="section-title">组件</span>
+            <span class="section-hint">点击添加</span>
+          </div>
+          <div id="palette" class="palette"></div>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="section-head">
+            <span class="section-title">画布</span>
+          </div>
+          <div class="mini-form">
+            <label class="field-row">
+              <span>背景</span>
+              <span class="color-pair">
+                <input id="canvasBgColor" type="color" value="#07111F">
+                <input id="canvasBgHex" type="text" value="#07111F" spellcheck="false">
+              </span>
+            </label>
+            <label class="field-row">
+              <span>网格</span>
+              <span class="inline-group">
+                <input id="gridSize" type="number" min="0" max="64" step="1" value="8">
+                <label class="switch-mini"><input id="showGrid" type="checkbox" checked><span>显示</span></label>
+              </span>
+            </label>
+          </div>
+          <div class="sidebar-actions">
+            <button id="sampleBtn" class="ghost-btn">载入示例</button>
+            <button id="newBtn" class="ghost-btn danger-ghost">清空</button>
+          </div>
+        </div>
+
+        <div class="sidebar-tip">
+          <b>提示</b>
+          <p>拖动控件移动，拖边角缩放。右键或图层列表可调整层级。导出 ZIP 里包含 <code>main.lua</code>、<code>ui_page.lua</code>、显示驱动和烧录脚本。</p>
+        </div>
+      </aside>
+
+      <section class="workspace">
+        <div class="workspace-toolbar">
+          <div class="toolbar-left">
+            <span class="screen-chip" id="screenChip">9 寸 · 1024×600</span>
+            <span class="toolbar-dim" id="selectionInfo">未选择控件</span>
+          </div>
+          <div class="toolbar-right">
+            <button id="gridToggleBtn" class="icon-btn small" title="显示/隐藏网格">#</button>
+            <span class="zoom-group">
+              <button id="zoomOutBtn" class="icon-btn small" title="缩小">−</button>
+              <button id="zoomFitBtn" class="zoom-label" title="适应窗口">100%</button>
+              <button id="zoomInBtn" class="icon-btn small" title="放大">+</button>
+            </span>
+          </div>
+        </div>
+
+        <div id="canvasScroll" class="canvas-scroll">
+          <div id="canvasWrap" class="canvas-wrap">
+            <div id="canvas" class="canvas">
+              <div id="canvasEmpty" class="canvas-empty">
+                <div class="empty-icon">＋</div>
+                <div class="empty-title">从左侧添加控件</div>
+                <div class="empty-sub">或点击“载入示例”快速开始</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="sidebar right-sidebar">
+        <div class="inspector-head">
+          <div>
+            <div class="section-title" id="inspectorTitle">页面设置</div>
+            <div class="section-hint" id="inspectorSub">未选择控件</div>
+          </div>
+          <div class="inspector-quick-actions" id="inspectorQuickActions"></div>
+        </div>
+        <div id="inspector" class="inspector"></div>
+
+        <div class="layers-head">
+          <span class="section-title">图层</span>
+          <span class="section-hint">从下到上</span>
+        </div>
+        <div id="layers" class="layers"></div>
+      </aside>
+    </main>
+
+    <footer class="statusbar">
+      <span id="statusText">就绪</span>
+      <span class="status-sep">·</span>
+      <span id="coordText">x 0 · y 0</span>
+      <span class="status-spacer"></span>
+      <span id="widgetCount">0 个控件</span>
+      <span class="status-sep">·</span>
+      <span id="zoomText">100%</span>
+    </footer>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-card">
+      <div class="modal-head">
+        <div id="modalTitle" class="modal-title">帮助</div>
+        <button id="modalCloseBtn" class="icon-btn" aria-label="关闭">×</button>
+      </div>
+      <div id="modalBody" class="modal-body"></div>
+    </div>
+  </div>
+
+  <input type="file" id="importFile" accept="application/json,.json" hidden>
+  <input type="file" id="imageFile" accept="image/png,image/jpeg,image/webp" hidden>
+
+  <script src="js/exd_template.js"></script>
+  <script src="js/generator.js"></script>
+  <script src="js/app-core.js"></script>
+  <script src="js/app-ui.js"></script>
+  <script src="js/app-events.js"></script>
+</body>
+</html>

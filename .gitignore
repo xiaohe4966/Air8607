@@ -1,0 +1,16 @@
+.DS_Store
+**/.DS_Store
+
+# 官方固件体积较大，放在 GitHub Releases，不提交到仓库
+firmware/*.soc
+!firmware/README.md
+
+# 本地工具/构建产物
+tools/
+node_modules/
+*.log
+*.zip
+!ui_designer/*.zip
+
+# macOS
+._*
