@@ -2,7 +2,7 @@
 **/.DS_Store
 
 # 官方固件体积较大，放在 GitHub Releases，不提交到仓库
-firmware/*.soc
+*.soc
 !firmware/README.md
 
 # 本地工具/构建产物
@@ -11,6 +11,12 @@ node_modules/
 *.log
 *.zip
 !ui_designer/*.zip
+
+# ESP-IDF 构建产物（源码和 sdkconfig.defaults 提交，build/sdkconfig 不提交）
+esp32c3_wifi_bridge/build/
+esp32c3_wifi_bridge/sdkconfig
+esp32c3_wifi_bridge/sdkconfig.old
+esp32c3_wifi_bridge/managed_components/
 
 # macOS
 ._*

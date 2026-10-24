@@ -25,6 +25,24 @@ jobs:
             node --check "$f"
           done
 
+      - name: Validate Air8607 + ESP32-C3 example
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const design = JSON.parse(fs.readFileSync('examples/air8607_c3_wifi/design.json', 'utf8'));
+          const names = design.pages.flatMap(p => (p.widgets || []).map(w => w.name));
+          for (const name of ['infoIp', 'infoTime']) {
+            if (!names.includes(name)) throw new Error('missing design widget: ' + name);
+          }
+          const main = fs.readFileSync('examples/air8607_c3_wifi/main.lua', 'utf8');
+          if (!main.includes('net.start(ui)')) throw new Error('main.lua must start net_bridge');
+          const net = fs.readFileSync('examples/air8607_c3_wifi/net_bridge.lua', 'utf8');
+          if (!net.includes('uart.setup(UART_ID, BAUD')) throw new Error('net_bridge.lua must configure UART');
+          const c3 = fs.readFileSync('esp32c3_wifi_bridge/main/main.c', 'utf8');
+          if (!c3.includes('tool.he4966.cn/api/tool/get_my_ip')) throw new Error('ESP32-C3 API URL missing');
+          console.log('C3 WiFi example: ok');
+          NODE
+
       - name: Generate a sample project
         run: |
           node - <<'NODE'

@@ -23,6 +23,14 @@
 
 - `airui_showcase/`、`agri_greenhouse/` 来自合宙 Air8607 示例工程，MIT License。
 
+## ESP32-C3 WiFi 网卡固件
+
+- ESP-IDF（Apache License 2.0）：<https://github.com/espressif/esp-idf>
+- cJSON（MIT License）：<https://github.com/DaveGamble/cJSON>
+- 使用位置：`esp32c3_wifi_bridge/`。该目录下的 `main.c`、`CMakeLists.txt`、`partitions.csv`、
+  `sdkconfig.defaults` 为本项目新增代码；ESP-IDF 和 cJSON 由构建系统按各自许可引入，
+  不随本仓库提交二进制或源码副本。
+
 ## 固件与媒体资源
 
 `firmware/*.soc` 为合宙官方发布的 Air1603 固件，未提交到 Git 仓库，而是放在 GitHub Releases 中，方便直接下载。固件版权归合宙 openLuat 所有。

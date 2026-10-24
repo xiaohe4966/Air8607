@@ -33,6 +33,8 @@ Air8607/
 │   └── lib/                     # 工厂工程需要的标准 LuatOS 扩展库
 ├── airui_showcase/              # AirUI 视觉特效/组件示例
 ├── agri_greenhouse/             # 农业大棚仪表盘示例
+├── examples/air8607_c3_wifi/    # Air8607 + ESP32-C3 WiFi 网卡示例
+├── esp32c3_wifi_bridge/         # ESP32-C3 WiFi/HTTPS 网卡固件
 ├── firmware/                    # 固件下载说明（.soc 在 Releases）
 ├── docs/ui-designer.png         # UI Studio 截图
 ├── flash_mac.sh                 # 烧录 factory / 查看日志
@@ -119,12 +121,36 @@ chmod +x flash.sh
 
 两者分辨率、RGB 时序、GT911 引脚相同，差异主要是 `screen_size` 和工程名。UI Studio 生成代码时也会写入对应的 `SCREEN_SIZE = 9/10`。
 
+## ESP32-C3 WiFi 网卡
+
+Air8607 本身没有 WiFi，可以用 ESP32-C3 做一颗「串口网卡」：
+
+```text
+Air8607 UART2 (J110 RX2/TX2)  <->  ESP32-C3 UART1 (GPIO4/GPIO5)  <->  WiFi / HTTPS
+```
+
+- ESP32-C3 固件：[`esp32c3_wifi_bridge/`](./esp32c3_wifi_bridge/)
+- Air8607 示例：[`examples/air8607_c3_wifi/`](./examples/air8607_c3_wifi/)
+- 接线、配网、协议、烧录和排错：[`docs/air8607-c3-wifi.md`](./docs/air8607-c3-wifi.md)
+
+ESP32-C3 第一次启动会开热点 `Air8607-C3`（密码 `air8607wifi`），手机连接后打开
+<http://192.168.4.1/> 填写 **2.4 GHz** WiFi（ESP32-C3 不支持 5 GHz）。连接成功后只请求一次
+`https://tool.he4966.cn/api/tool/get_my_ip`，把公网 IP 和服务器时间通过 UART 发给 Air8607。
+Air8607 控制台页的「设备信息」卡片会显示：
+
+```text
+IP 180.113.152.47
+时间 2026-10-24 11:26:02
+```
+
 ## 验证状态
 
 - factory 工程和 UI Studio 生成工程均已通过 `luatos-cli` 的 Lua 编译与 LuaDB 打包验证。
 - 已在 **Air8607 + 10 英寸 1024×600 + GT911** 实机上完成 LuatOS `V1028` 内核实机全量烧录：显示初始化、AirUI、GT911 触摸、背光均正常。
 - 已在实机上验证 UI Studio 多页面示例：点击「更多设置 →」进入第二页，再点「← 返回控制台」返回启动页；页面按需构建，串口日志确认 `M.go()` / `M.back()` 和 `set_hidden` 切换均正常。
 - 实机日志、全量烧录失败/恢复记录和复现命令见 [docs/hardware-validation.md](./docs/hardware-validation.md)。
+- ESP32-C3 固件已用 ESP-IDF 5.4.3 编译并烧录到 QFN32 rev0.3（4 MB MXIC flash）；启动日志确认 UART1 GPIO4/5、115200 8N1 和 `Air8607-C3` 配网热点正常。
+- Air8607 的 `air8607_c3_wifi` 示例已烧录，日志确认 UART2 客户端启动；端到端网络信息显示需要在 J110 上接好三根线并在配网页填写 WiFi 后验证。
 - 尚未做屏幕拍照的像素级视觉检查；滑块、开关等控件的触摸回调未逐项做人工验收。
 - 9 英寸预设尚未在 9 英寸实机上验证。9 寸面板驱动 IC 在官方文档中出现 JD9165BA，也有 Air8602 9 寸工程使用 HX8282；如果显示异常，优先确认实际面板型号。
 
