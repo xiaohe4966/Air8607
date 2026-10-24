@@ -141,6 +141,7 @@ Air8607 UART2 (J110 RX2/TX2)  <->  ESP32-C3 UART1 (GPIO4/GPIO5)  <->  WiFi / HTT
 - ESP32-C3 固件：[`esp32c3_wifi_bridge/`](./esp32c3_wifi_bridge/)
 - Air8607 示例：[`examples/air8607_c3_wifi/`](./examples/air8607_c3_wifi/)
 - 接线、配网、协议、烧录和排错：[`docs/air8607-c3-wifi.md`](./docs/air8607-c3-wifi.md)
+- 换台电脑继续开发：[`docs/dev-environment.md`](./docs/dev-environment.md)
 
 ESP32-C3 第一次启动会开热点 `Air8607-C3`（密码 `air8607wifi`），手机连接后打开
 <http://192.168.4.1/> 填写 **2.4 GHz** WiFi（ESP32-C3 不支持 5 GHz）。连接成功后只请求一次

@@ -63,6 +63,8 @@ Air8607 侧使用 LuatOS `uart.setup(2, ...)`，对应 UART2；J110 的 `RX2/TX2
 | `examples/air8607_c3_wifi/` | Air8607 LuatOS 工程：UI + UART2 客户端 |
 | `esp32c3_wifi_bridge/main/main.c` | 固件主逻辑 |
 | `examples/air8607_c3_wifi/net_bridge.lua` | Air8607 侧行协议客户端 |
+| `docs/wiring/` | 接线图（PNG + SVG 矢量原图） |
+| `docs/dev-environment.md` | 换台电脑继续开发的环境搭建指南 |
 
 ## 1. 烧录 ESP32-C3
 
