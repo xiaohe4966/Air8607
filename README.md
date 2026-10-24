@@ -79,6 +79,7 @@ Air8607/
 ### 2. 烧录 factory 工程
 
 ```bash
+git clone https://github.com/xiaohe4966/Air8607.git
 cd Air8607
 ./flash_mac.sh ports          # 确认串口
 ./flash_mac.sh full           # 首次：全量刷出厂固件 + 当前 9 寸 factory
