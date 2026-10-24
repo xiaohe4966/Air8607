@@ -8,6 +8,11 @@ git clone https://github.com/xiaohe4966/Air8607.git
 cd Air8607
 ```
 
+> 已验证：用上面这条命令全新 clone 到空目录后，只靠仓库里的 `sdkconfig.defaults` 就能
+> `idf.py set-target esp32c3 && idf.py build` 一次成功，产物大小与 Release 里的
+> 预编译固件一致（仅内置的编译时间戳不同）；`examples/air8607_c3_wifi` 也能直接
+> `luatos-cli build luac` 通过。
+
 ## 1. 需要装的工具
 
 | 工具 | 版本 | 用途 | 备注 |
@@ -194,5 +199,8 @@ I (xxx) air8607-c3: UART RX[1]: FETCH
 - UI Studio（在线）：<https://xiaohe4966.github.io/Air8607/>
 - 方案文档：[`docs/air8607-c3-wifi.md`](./air8607-c3-wifi.md)
 - Releases（含 `.soc` 与 C3 预编译固件）：<https://github.com/xiaohe4966/Air8607/releases/latest>
+  - `LuatOS-SoC_V1028_Air1603_102.soc` —— 刷脚本区用
+  - `Air8607_Factory_001.999.001_LuatOS-SoC_V1028_Air1603_102.soc` —— 首次全量烧录用
+  - `esp32c3_wifi_bridge_prebuilt.zip` —— C3 预编译固件（免装 ESP-IDF）
 - 合宙 Air1603 硬件文档：<https://docs.openluat.com/air1603/luatos/hardware/>
 - 合宙 LuatOS 文档：<https://wiki.luatos.com/>
