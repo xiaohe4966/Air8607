@@ -19,21 +19,38 @@ SNTP（`ntp.aliyun.com` / `cn.pool.ntp.org` / `pool.ntp.org`）对时，再请�
 
 ## 接线
 
+![Air8607 与 ESP32-C3 接线图](./wiring/air8607-c3-wiring.png)
+
+矢量原图：[`docs/wiring/air8607-c3-wiring.svg`](./wiring/air8607-c3-wiring.svg)
+
 Air8607 的 J110 是 1×8 2.54 mm 排针，其中包含 UART1 和 UART2：
 
 | Air8607 J110 | 信号 | 方向 | ESP32-C3 |
 | --- | --- | --- | --- |
 | pin 5 | `RX2` | ← | GPIO4 `UART1_TX` |
 | pin 6 | `TX2` | → | GPIO5 `UART1_RX` |
-| pin 3 或 7 / 板级 GND | `GND` | ↔ | `GND` |
+| pin 3 或 7 | `GND` | ↔ | `GND` |
+
+J110 完整针脚（官方原理图）：`1 RX1`、`2 TX1`、`3 GND`、`4 VBAT`、`5 RX2`、
+`6 TX2`、`7 GND`、`8 VDD_EXT`。
+
+接线步骤：
+
+1. 断电，先认清 J110 上印着 `RX2` / `TX2` / `GND` 的三个针脚（丝印优先，不要盲数）。
+2. 一根杜邦线：**C3 的 GPIO4 → J110 pin 5（RX2）**。
+3. 一根杜邦线：**J110 pin 6（TX2）→ C3 的 GPIO5**。
+4. 一根杜邦线：**J110 pin 3 或 pin 7（GND）→ C3 的 GND**。
+5. C3 插 USB 供电，Air8607 照常供电。
 
 注意：
 
 - **TX/RX 必须交叉**：ESP32-C3 的 TX 接 Air8607 的 RX，反之亦然。
 - **必须共地**，否则串口会随机丢字节。
 - 两边都是 3.3 V 逻辑，不需要电平转换。不要把 5 V 信号直接接进来。
+- **不要接 C3 板上 USB 口旁边的 `TX`/`RX`**：那是 UART0 调试口（固件日志用的），必须用 **GPIO4/GPIO5**。
 - 调试阶段 ESP32-C3 用 USB 供电。量产时用独立的 3.3 V/5 V 电源，留足 WiFi 峰值电流。
 - **不要用 Air1603 的 `VDD_EXT` 给 ESP32-C3 供电**。该引脚是接口上拉/小电流辅助电源，带不动 WiFi 峰值。
+- **`VBAT`（pin 4）是 3.3–4.35 V 电池输入**，也不要拿来给 C3 供电。
 - ESP32-C3 只支持 2.4 GHz WiFi，不支持 5 GHz。配网时请选择 2.4 GHz SSID。
 
 Air8607 侧使用 LuatOS `uart.setup(2, ...)`，对应 UART2；J110 的 `RX2/TX2` 就是 UART2。
@@ -182,7 +199,31 @@ I/user.main AirUI page ready: air8607_c3_wifi
 - **端到端**（真实 WiFi + HTTPS + Air8607 显示）需要在 J110 接好三根线，并在配网页填写 WiFi 后复测。
   当前代码路径已经打通，但受限于实机接线/凭据，尚未记录最终 API 返回值在屏幕上的照片。
 
-## 6. 排错
+## 6. 接线后自检（3 分钟）
+
+接完线先别急着配网，按下面三步确认链路是通的：
+
+```bash
+# 1) 看 C3 的 USB 日志：有没有收到 Air8607 发来的 FETCH
+python3 -c "
+import serial,time
+s=serial.Serial('/dev/cu.wchusbserialXXXX',115200,timeout=0.2)
+end=time.time()+8
+while time.time()<end:
+    d=s.read(4096)
+    if d: print(d.decode('utf-8','replace'))
+"
+# 期望看到： I (xxx) air8607-c3: UART RX[1]: FETCH
+```
+
+2. C3 日志出现 `UART RX: FETCH` 后，C3 会回一行 JSON（串口 TX 方向），
+   Air8607 收到后屏幕上会从 `IP 等待网卡...` 变成 `IP 配网中...`（C3 还在配网模式）。
+3. 手机连 `Air8607-C3` / `air8607wifi`，打开 <http://192.168.4.1/> 填 2.4 GHz WiFi。
+   C3 重启 → 连 WiFi → 对时 → 请求 API → 屏幕显示 `IP 180.x.x.x` 和 `时间 2026-10-24 11:26:02`。
+
+如果第 1 步没有 `UART RX: FETCH`，先别配网，回去查线（见下一节）。
+
+## 7. 排错
 
 ### Air8607 一直显示 `IP 等待网卡...`
 
@@ -223,7 +264,7 @@ ESP32-C3 没有 WiFi 凭据，或连不上保存的网络。手机连接 `Air860
 - 如果 `usbmodem` 接口报 `0107 Checksum error` 或 `0105 format invalid`，换 USB 口/线，避免无源 Hub。
 - 本机全量烧录 Air8607 时也遇到过 Hub 掉线；拔插 USB 后恢复。
 
-## 7. 生产化建议
+## 8. 生产化建议
 
 - 修改默认 AP 密码，或增加配网完成后的 AP 关闭逻辑。
 - 增加 WiFi 断线重连后的重新请求策略（当前只在启动时请求一次；需要刷新时发 `REBOOT`）。

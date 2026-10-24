@@ -37,6 +37,7 @@ Air8607/
 ├── esp32c3_wifi_bridge/         # ESP32-C3 WiFi/HTTPS 网卡固件
 ├── firmware/                    # 固件下载说明（.soc 在 Releases）
 ├── docs/ui-designer.png         # UI Studio 截图
+├── docs/wiring/                 # Air8607 ↔ ESP32-C3 接线图（SVG/PNG）
 ├── flash_mac.sh                 # 烧录 factory / 查看日志
 ├── flash_project.sh             # 烧录 UI Studio 导出的独立工程
 ├── LICENSE
@@ -128,6 +129,14 @@ Air8607 本身没有 WiFi，可以用 ESP32-C3 做一颗「串口网卡」：
 ```text
 Air8607 UART2 (J110 RX2/TX2)  <->  ESP32-C3 UART1 (GPIO4/GPIO5)  <->  WiFi / HTTPS
 ```
+
+![Air8607 与 ESP32-C3 接线图](./docs/wiring/air8607-c3-wiring.png)
+
+| Air8607 J110 | ESP32-C3 | 说明 |
+| --- | --- | --- |
+| pin 5 `RX2` | GPIO4 (TX) | 数据进 Air8607 |
+| pin 6 `TX2` | GPIO5 (RX) | 数据进 C3 |
+| pin 3 / 7 `GND` | GND | 必须共地 |
 
 - ESP32-C3 固件：[`esp32c3_wifi_bridge/`](./esp32c3_wifi_bridge/)
 - Air8607 示例：[`examples/air8607_c3_wifi/`](./examples/air8607_c3_wifi/)

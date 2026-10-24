@@ -17,20 +17,24 @@ https://tool.he4966.cn/api/tool/get_my_ip
 
 ## 接线
 
-Air8607 的 J110 排针：
+![Air8607 与 ESP32-C3 接线图](../../docs/wiring/air8607-c3-wiring.png)
+
+Air8607 的 J110 排针（`1 RX1`、`2 TX1`、`3 GND`、`4 VBAT`、`5 RX2`、`6 TX2`、`7 GND`、`8 VDD_EXT`）：
 
 | Air8607 J110 | 方向 | ESP32-C3 |
 | --- | --- | --- |
 | pin 5 `RX2` | ← | GPIO4 `UART1_TX` |
 | pin 6 `TX2` | → | GPIO5 `UART1_RX` |
-| GND | ↔ | GND |
+| pin 3 或 7 `GND` | ↔ | GND |
 
 注意事项：
 
 - 两边都是 3.3 V 逻辑，不需要电平转换。
+- **不要接 C3 板上 USB 口旁边的 `TX`/`RX`**，那是 UART0 调试口，必须用 **GPIO4/GPIO5**。
 - 调试阶段 ESP32-C3 用 USB 供电；不要用 Air1603 的 `VDD_EXT` 给 ESP32-C3 供电，
   该引脚只适合接口上拉，带不动 WiFi 峰值电流。
 - 必须共地。TX/RX 交叉连接。
+- ESP32-C3 只支持 2.4 GHz WiFi，配网请选 2.4 GHz 的 SSID。
 
 ## 文件
 
