@@ -114,6 +114,12 @@ chmod +x flash.sh
 
 两者分辨率、RGB 时序、GT911 引脚相同，差异主要是 `screen_size` 和工程名。UI Studio 生成代码时也会写入对应的 `SCREEN_SIZE = 9/10`。
 
+## 验证状态
+
+- 已用 `luatos-cli` 对 factory 工程和 UI Studio 生成工程做过 Lua 编译与 LuaDB 打包验证；打包只停在“未连接串口”这一步。
+- 当前开发环境没有连接 Air8607 实机，**显示、GT911 触摸、背光和运行时行为尚未在硬件上验证**。首次上电前请先核对屏幕排线、面板 IC 和卖家配置。
+- 9 寸面板驱动 IC 在官方文档中出现 JD9165BA，也有 Air8602 9 寸工程使用 HX8282；如果显示异常，优先确认实际面板型号。
+
 ## 重要说明
 
 - `factory/main.lua` 里的 `PROJECT_KEY` 已替换为 `YOUR_PROJECT_KEY`，避免开源仓库泄露密钥。使用合宙 IoT/FOTA 功能前请填自己的项目密钥。
