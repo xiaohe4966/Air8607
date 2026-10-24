@@ -21,6 +21,7 @@
   UI.editSnapshot = null;
   UI.drag = null;
   UI.previewSwitches = {};
+  UI.previewPageHistory = [];
   UI.saveTimer = null;
   UI.pendingImageId = null;
   UI.toastTimer = null;
@@ -93,18 +94,46 @@
     if (UI.el.statusText) UI.el.statusText.textContent = msg;
   };
 
+  UI.findPage = function (id) {
+    if (!UI.design || !Array.isArray(UI.design.pages)) return null;
+    for (var i = 0; i < UI.design.pages.length; i++) {
+      if (UI.design.pages[i].id === id) return UI.design.pages[i];
+    }
+    return null;
+  };
+
+  UI.currentPage = function () {
+    if (!UI.design) return null;
+    if (!Array.isArray(UI.design.pages) || !UI.design.pages.length) {
+      UI.design.pages = [{ id: 'p_home', name: '页面 1', widgets: [] }];
+      UI.design.startPage = UI.design.pages[0].id;
+      UI.design.activePage = UI.design.pages[0].id;
+    }
+    var page = UI.findPage(UI.design.activePage) || UI.design.pages[0];
+    UI.design.activePage = page.id;
+    if (!UI.findPage(UI.design.startPage)) UI.design.startPage = page.id;
+    return page;
+  };
+
+  UI.currentWidgets = function () {
+    var page = UI.currentPage();
+    return page ? page.widgets : [];
+  };
+
   UI.findWidget = function (id) {
     if (!UI.design || !id) return null;
-    for (var i = 0; i < UI.design.widgets.length; i++) {
-      if (UI.design.widgets[i].id === id) return UI.design.widgets[i];
+    var widgets = UI.currentWidgets();
+    for (var i = 0; i < widgets.length; i++) {
+      if (widgets[i].id === id) return widgets[i];
     }
     return null;
   };
 
   UI.widgetIndex = function (id) {
     if (!UI.design) return -1;
-    for (var i = 0; i < UI.design.widgets.length; i++) {
-      if (UI.design.widgets[i].id === id) return i;
+    var widgets = UI.currentWidgets();
+    for (var i = 0; i < widgets.length; i++) {
+      if (widgets[i].id === id) return i;
     }
     return -1;
   };
@@ -134,7 +163,7 @@
     var n = 1;
     var name = b + '_' + n;
     var used = {};
-    (UI.design.widgets || []).forEach(function (w) { used[w.name] = true; });
+    UI.currentWidgets().forEach(function (w) { used[w.name] = true; });
     while (used[name]) { n++; name = b + '_' + n; }
     return name;
   };
@@ -149,7 +178,7 @@
         if (parsed && parsed.design) {
           data = parsed.design;
           if (parsed.view && typeof parsed.view.showGrid === 'boolean') UI.view.showGrid = parsed.view.showGrid;
-        } else if (parsed && Array.isArray(parsed.widgets)) {
+        } else if (parsed && (Array.isArray(parsed.pages) || Array.isArray(parsed.widgets))) {
           data = parsed;
         }
       } catch (e) { data = null; }
@@ -274,7 +303,7 @@
     UI.syncCanvasControls();
     UI.updateHistoryButtons();
     if (UI.el.previewBtn) UI.el.previewBtn.textContent = UI.view.preview ? '退出预览' : '预览';
-    if (UI.el.widgetCount) UI.el.widgetCount.textContent = UI.design.widgets.length + ' 个控件';
+    if (UI.el.widgetCount) UI.el.widgetCount.textContent = UI.currentWidgets().length + ' 个控件 · ' + UI.design.pages.length + ' 页';
     if (UI.el.zoomText) UI.el.zoomText.textContent = Math.round(UI.view.zoom * 100) + '%';
     if (UI.el.zoomFitBtn) UI.el.zoomFitBtn.textContent = Math.round(UI.view.zoom * 100) + '%';
   };
@@ -500,7 +529,7 @@
     canvas.classList.toggle('preview-mode', !!UI.view.preview);
 
     $$('.widget', canvas).forEach(function (el) { el.remove(); });
-    var widgets = UI.design.widgets || [];
+    var widgets = UI.currentWidgets();
     if (UI.el.canvasEmpty) UI.el.canvasEmpty.style.display = (widgets.length === 0 && !UI.view.preview) ? 'grid' : 'none';
 
     widgets.forEach(function (w) {
@@ -512,6 +541,7 @@
   UI.renderAll = function () {
     if (!UI.design) return;
     UI.syncToolbar();
+    UI.renderPageTabs();
     UI.renderCanvas();
     UI.renderLayers();
     UI.renderInspector();
@@ -525,7 +555,7 @@
         ? (G.TYPE_LABELS[w.type] || w.type) + ' · ' + (w.name || '') + '  ' + Math.round(w.x) + ',' + Math.round(w.y) + '  ' + Math.round(w.w) + '×' + Math.round(w.h)
         : '未选择控件';
     }
-    if (UI.el.widgetCount) UI.el.widgetCount.textContent = UI.design.widgets.length + ' 个控件';
+    if (UI.el.widgetCount) UI.el.widgetCount.textContent = UI.currentWidgets().length + ' 个控件 · ' + UI.design.pages.length + ' 页';
     if (UI.el.zoomText) UI.el.zoomText.textContent = Math.round(UI.view.zoom * 100) + '%';
     if (UI.el.zoomFitBtn) UI.el.zoomFitBtn.textContent = Math.round(UI.view.zoom * 100) + '%';
   };
@@ -562,7 +592,8 @@
     var d = G.DEFAULTS[type];
     if (!d) return;
     UI.pushHistory();
-    var count = UI.design.widgets.length;
+    var page = UI.currentPage();
+    var count = page.widgets.length;
     var id = G.uid('w');
     var offset = (count % 8) * 14;
     var x = clamp(Math.round((W - d.w) / 2 + offset), 0, Math.max(0, W - d.w));
@@ -576,12 +607,12 @@
       visible: true,
       locked: false
     });
-    UI.design.widgets.push(widget);
+    page.widgets.push(widget);
     UI.design = G.normalizeState(UI.design);
     UI.selectedId = id;
     UI.renderAll();
     UI.saveNow();
-    UI.toast('已添加 ' + (G.TYPE_LABELS[type] || type));
+    UI.toast('已添加 ' + (G.TYPE_LABELS[type] || type) + ' 到「' + page.name + '」');
   };
 
   UI.duplicateSelected = function () {
@@ -594,7 +625,7 @@
     copy.x = clamp(num(w.x, 0) + 16, 0, Math.max(0, W - num(w.w, 1)));
     copy.y = clamp(num(w.y, 0) + 16, 0, Math.max(0, H - num(w.h, 1)));
     var idx = UI.widgetIndex(w.id);
-    UI.design.widgets.splice(idx + 1, 0, copy);
+    UI.currentPage().widgets.splice(idx + 1, 0, copy);
     UI.design = G.normalizeState(UI.design);
     UI.selectedId = copy.id;
     UI.renderAll();
@@ -607,7 +638,7 @@
     if (!w) return;
     UI.pushHistory();
     var idx = UI.widgetIndex(w.id);
-    UI.design.widgets.splice(idx, 1);
+    UI.currentPage().widgets.splice(idx, 1);
     UI.selectedId = null;
     UI.renderAll();
     UI.saveNow();
@@ -618,7 +649,7 @@
     var w = UI.findWidget(UI.selectedId);
     if (!w) return;
     var idx = UI.widgetIndex(w.id);
-    var arr = UI.design.widgets;
+    var arr = UI.currentWidgets();
     if (action === 'front' && idx < arr.length - 1) {
       UI.pushHistory();
       arr.splice(idx, 1);
@@ -654,6 +685,128 @@
     UI.scheduleSave();
   };
 
+  /* ---------------- pages ---------------- */
+  UI.uniquePageName = function (base) {
+    var b = String(base || '页面').trim() || '页面';
+    var used = {};
+    (UI.design.pages || []).forEach(function (p) { used[p.name] = true; });
+    if (!used[b]) return b;
+    var n = 2;
+    while (used[b + ' ' + n]) n++;
+    return b + ' ' + n;
+  };
+
+  UI.switchPage = function (id, opts) {
+    var page = UI.findPage(id);
+    if (!page) return false;
+    opts = opts || {};
+    UI.commitEdit();
+    var changed = UI.design.activePage !== page.id;
+    UI.design.activePage = page.id;
+    UI.selectedId = null;
+    UI.renderAll();
+    UI.scheduleSave();
+    if (changed && !opts.silent) UI.setStatus('已切换到页面：' + page.name);
+    return true;
+  };
+
+  UI.addPage = function () {
+    UI.pushHistory();
+    var name = UI.uniquePageName('页面 ' + ((UI.design.pages || []).length + 1));
+    var page = { id: G.uid('p'), name: name, widgets: [] };
+    UI.design.pages.push(page);
+    UI.design.activePage = page.id;
+    UI.selectedId = null;
+    UI.design = G.normalizeState(UI.design);
+    UI.renderAll();
+    UI.saveNow();
+    UI.toast('已新建页面：' + page.name);
+    return page;
+  };
+
+  UI.duplicatePage = function (id) {
+    var src = UI.findPage(id || UI.design.activePage);
+    if (!src) return;
+    UI.pushHistory();
+    var copy = JSON.parse(JSON.stringify(src));
+    copy.id = G.uid('p');
+    copy.name = UI.uniquePageName(src.name + ' 副本');
+    copy.widgets.forEach(function (w) { w.id = G.uid('w'); });
+    var idx = UI.design.pages.indexOf(src);
+    UI.design.pages.splice(idx + 1, 0, copy);
+    UI.design.activePage = copy.id;
+    UI.selectedId = null;
+    UI.design = G.normalizeState(UI.design);
+    UI.renderAll();
+    UI.saveNow();
+    UI.toast('已复制页面：' + copy.name);
+  };
+
+  UI.deletePage = function (id) {
+    var page = UI.findPage(id || UI.design.activePage);
+    if (!page) return;
+    if (UI.design.pages.length <= 1) {
+      UI.toast('至少保留一个页面', 'error');
+      return;
+    }
+    if (!window.confirm('删除页面「' + page.name + '」？此操作可以撤销。')) return;
+    UI.pushHistory();
+    var idx = UI.design.pages.indexOf(page);
+    UI.design.pages.splice(idx, 1);
+    var fallback = UI.design.pages[Math.min(idx, UI.design.pages.length - 1)];
+    if (UI.design.startPage === page.id) UI.design.startPage = fallback.id;
+    if (UI.design.activePage === page.id) UI.design.activePage = fallback.id;
+    UI.design.pages.forEach(function (p) {
+      p.widgets.forEach(function (w) {
+        if (w.type === 'button' && w.action === 'page' && w.target === page.id) {
+          w.action = 'none';
+          w.target = '';
+        }
+      });
+    });
+    UI.selectedId = null;
+    UI.design = G.normalizeState(UI.design);
+    UI.renderAll();
+    UI.saveNow();
+    UI.toast('已删除页面：' + page.name);
+  };
+
+  UI.setStartPage = function (id) {
+    var page = UI.findPage(id || UI.design.activePage);
+    if (!page) return;
+    if (UI.design.startPage === page.id) {
+      UI.toast('「' + page.name + '」已经是启动页');
+      return;
+    }
+    UI.pushHistory();
+    UI.design.startPage = page.id;
+    UI.renderPageTabs();
+    UI.renderInspector();
+    UI.saveNow();
+    UI.toast('启动页已设为：' + page.name);
+  };
+
+  UI.previewGo = function (targetId) {
+    var target = UI.findPage(targetId);
+    if (!target) return false;
+    if (target.id === UI.design.activePage) return false;
+    UI.previewPageHistory.push(UI.design.activePage);
+    UI.switchPage(target.id, { silent: true });
+    UI.toast('已跳转到页面：' + target.name);
+    return true;
+  };
+
+  UI.previewBack = function () {
+    var prev = UI.previewPageHistory.pop();
+    if (!prev || !UI.findPage(prev)) {
+      UI.toast('没有上一页可返回');
+      return false;
+    }
+    UI.switchPage(prev, { silent: true });
+    UI.toast('已返回上一页');
+    return true;
+  };
+
   UI.setScreenPreset = function (preset) {
     if (!UI.design) return;
     var p = String(preset) === '10' ? '10' : '9';
@@ -677,37 +830,41 @@
   };
 
   UI.loadSample = function () {
-    if (UI.design.widgets.length && !window.confirm('载入示例会替换当前画布，继续？')) return;
+    var total = (UI.design.pages || []).reduce(function (n, p) { return n + p.widgets.length; }, 0);
+    if (total && !window.confirm('载入示例会替换当前所有页面，继续？')) return;
     UI.pushHistory();
     UI.design = G.sampleProject();
     UI.selectedId = null;
     UI.view.preview = false;
     UI.previewSwitches = {};
+    UI.previewPageHistory = [];
     UI.renderAll();
     UI.applyZoom();
     UI.saveNow();
-    UI.toast('已载入示例');
+    UI.toast('已载入多页面示例');
   };
 
   UI.clearCanvas = function () {
-    if (!UI.design.widgets.length) return;
-    if (!window.confirm('清空当前画布？此操作可以撤销。')) return;
+    var page = UI.currentPage();
+    if (!page.widgets.length) return;
+    if (!window.confirm('清空页面「' + page.name + '」的控件？此操作可以撤销。')) return;
     UI.pushHistory();
-    UI.design.widgets = [];
+    page.widgets = [];
     UI.selectedId = null;
     UI.renderAll();
     UI.saveNow();
-    UI.toast('画布已清空');
+    UI.toast('页面「' + page.name + '」已清空');
   };
 
   UI.togglePreview = function () {
     UI.commitEdit();
     UI.view.preview = !UI.view.preview;
     UI.previewSwitches = {};
+    UI.previewPageHistory = [];
     UI.renderCanvas();
     UI.syncToolbar();
     UI.updateSelectionInfo();
-    UI.toast(UI.view.preview ? '预览模式：点击按钮/开关可测试' : '已退出预览');
+    UI.toast(UI.view.preview ? '预览模式：点击按钮跳页、开关切换可测试' : '已退出预览');
   };
 
   /* ---------------- export / import ---------------- */
@@ -753,17 +910,21 @@
       var text = await file.text();
       var parsed = JSON.parse(text);
       var data = parsed && parsed.design ? parsed.design : parsed;
-      if (!data || !Array.isArray(data.widgets)) throw new Error('不是有效的设计稿：缺少 widgets 数组');
+      if (!data || (!Array.isArray(data.pages) && !Array.isArray(data.widgets))) {
+        throw new Error('不是有效的设计稿：缺少 pages 或 widgets 数组');
+      }
       UI.pushHistory();
       UI.design = G.normalizeState(data);
       if (parsed && parsed.view && typeof parsed.view.showGrid === 'boolean') UI.view.showGrid = parsed.view.showGrid;
       UI.selectedId = null;
       UI.view.preview = false;
       UI.previewSwitches = {};
+      UI.previewPageHistory = [];
       UI.renderAll();
       UI.applyZoom();
       UI.saveNow();
-      UI.toast('已导入 ' + UI.design.widgets.length + ' 个控件');
+      var total = UI.design.pages.reduce(function (n, p) { return n + p.widgets.length; }, 0);
+      UI.toast('已导入 ' + UI.design.pages.length + ' 个页面 / ' + total + ' 个控件');
     } catch (e) {
       UI.toast('导入失败：' + (e.message || e), 'error');
     }

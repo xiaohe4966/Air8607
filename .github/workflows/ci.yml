@@ -36,11 +36,30 @@ jobs:
               throw new Error('missing generated file: ' + name);
             }
           }
+          if (!out.state.pages || out.state.pages.length < 2) {
+            throw new Error('sample project must contain multiple pages');
+          }
+          const ui = typeof out.files['ui_page.lua'] === 'string'
+            ? out.files['ui_page.lua']
+            : out.files['ui_page.lua'].text;
+          for (const marker of ['function M.go(', 'function M.back(', ':set_hidden(', 'M.go("page_2")']) {
+            if (!ui.includes(marker)) {
+              throw new Error('generated ui_page.lua missing page routing marker: ' + marker);
+            }
+          }
           const flash = typeof out.files['flash.sh'] === 'string'
             ? out.files['flash.sh']
             : out.files['flash.sh'].text;
           if (!flash.includes('! -name "*.soc"')) {
             throw new Error('flash.sh must skip .soc files when flattening');
+          }
+          const legacy = g.normalizeState({
+            version: 1,
+            project: 'legacy',
+            widgets: [{ id: 'w1', type: 'label', name: 'hello', x: 0, y: 0, w: 100, h: 20 }]
+          });
+          if (legacy.version !== 2 || legacy.pages.length !== 1 || legacy.pages[0].widgets.length !== 1) {
+            throw new Error('legacy single-page design migration failed');
           }
           const zip = g.zipStore(out.files);
           if (!zip || zip.length < 1000) {

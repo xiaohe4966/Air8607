@@ -61,7 +61,9 @@
   }
 
   function scopeAttr(scope) {
-    return scope === 'screen' ? ' data-scope="screen"' : ' data-scope="widget"';
+    if (scope === 'screen') return ' data-scope="screen"';
+    if (scope === 'page') return ' data-scope="page"';
+    return ' data-scope="widget"';
   }
 
   function textInput(prop, value, opts) {
@@ -175,6 +177,20 @@
         field('边框颜色', colorInput('borderColor', w.borderColor), true) +
         field('按下背景', colorInput('pressedBg', w.pressedBg), true)
       ));
+
+      var pageOpts = [['', '选择目标页面']];
+      UI.design.pages.forEach(function (p) { pageOpts.push([p.id, p.name]); });
+      html += section('点击动作', grid(
+        field('动作', selectInput('action', w.action || 'none', [
+          ['none', '无（只生成 TODO）'],
+          ['page', '跳转页面'],
+          ['back', '返回上一页']
+        ]), true) +
+        (w.action === 'page'
+          ? field('目标页面', selectInput('target', w.target || '', pageOpts), true)
+          : '') +
+        '<div class="inspector-field full"><p class="inspector-note">跳转页面会生成 <code>M.go("page_key")</code>；返回上一页生成 <code>M.back()</code>。预览模式下可以直接点击测试。</p></div>'
+      ));
     } else if (w.type === 'image') {
       var asset = w.asset && UI.design.assets[w.asset];
       html += section('图片', grid(
@@ -240,8 +256,11 @@
   };
 
   function renderPageInspector() {
+    var page = UI.currentPage();
+    var idx = UI.design.pages.indexOf(page) + 1;
+    var isStart = page.id === UI.design.startPage;
     UI.el.inspectorTitle.textContent = '页面设置';
-    UI.el.inspectorSub.textContent = '未选择控件';
+    UI.el.inspectorSub.textContent = '第 ' + idx + ' / ' + UI.design.pages.length + ' 页 · 未选择控件';
     UI.el.inspectorQuickActions.innerHTML = '';
 
     var s = UI.design.screen;
@@ -249,8 +268,20 @@
     var html = '';
 
     html += '<div class="page-hero"><b>' + esc(UI.design.project) + '</b>' +
-      '<p>' + size + ' · 1024 × 600 · ' + UI.design.widgets.length + ' 个控件<br>' +
-      '输出 main.lua、ui_page.lua、显示驱动、烧录脚本和设计稿 JSON。</p></div>';
+      '<p>' + size + ' · 1024 × 600 · ' + page.widgets.length + ' 个控件 · 共 ' + UI.design.pages.length + ' 页<br>' +
+      '上方页面标签可切换；★ 表示启动页。</p></div>';
+
+    html += section('当前页面', grid(
+      field('页面名称', textInput('name', page.name, { scope: 'page', maxlength: 48 }), true) +
+      '<div class="inspector-field"><label>控件数</label><div class="inspector-check">' + page.widgets.length + ' 个</div></div>' +
+      '<div class="inspector-field"><label>启动页</label><div class="inspector-check">' + (isStart ? '★ 是' : '否') + '</div></div>' +
+      '<div class="inspector-field full"><div class="inspector-actions-row">' +
+        (isStart ? '' : '<button class="ghost-btn" data-action="set-start">设为启动页</button>') +
+        '<button class="ghost-btn" data-action="add-page">新建页面</button>' +
+        '<button class="ghost-btn" data-action="duplicate-page">复制页面</button>' +
+        '<button class="ghost-btn danger-ghost" data-action="delete-page">删除页面</button>' +
+      '</div></div>'
+    ));
 
     html += section('画布', grid(
       '<div class="inspector-field"><label>宽度</label><div class="inspector-check">1024 px</div></div>' +
@@ -261,14 +292,14 @@
     ));
 
     html += section('快捷操作', '<div class="inspector-actions-row">' +
-      '<button class="ghost-btn" data-action="sample">载入示例</button>' +
-      '<button class="ghost-btn danger-ghost" data-action="clear">清空画布</button>' +
+      '<button class="ghost-btn" data-action="sample">载入多页示例</button>' +
+      '<button class="ghost-btn danger-ghost" data-action="clear">清空当前页</button>' +
       '<button class="ghost-btn" data-action="export-zip">导出工程 ZIP</button>' +
       '</div>');
 
     html += section('输出文件', '<p class="inspector-note">' +
       '<code>main.lua</code> 显示/触摸/背光初始化<br>' +
-      '<code>ui_page.lua</code> 生成的 AirUI 界面<br>' +
+      '<code>ui_page.lua</code> 多页面 AirUI 界面 + 页面路由<br>' +
       '<code>exd_air8607_rgb.lua</code> 屏幕驱动<br>' +
       '<code>flash.sh</code> 平铺文件并烧录<br>' +
       '<code>res/</code> 上传的图片资源</p>');
@@ -281,11 +312,26 @@
     UI.el.inspector.scrollTop = 0;
   }
 
+  UI.renderPageTabs = function () {
+    if (!UI.el.pageTabs || !UI.design) return;
+    var active = UI.currentPage();
+    var html = UI.design.pages.map(function (p) {
+      var isStart = p.id === UI.design.startPage;
+      return '<button class="page-tab' + (p.id === active.id ? ' active' : '') + '" data-page-id="' + esc(p.id) + '"' +
+        ' title="' + esc(p.name) + (isStart ? ' · 启动页' : '') + '">' +
+        '<span class="page-tab-star' + (isStart ? ' on' : '') + '">' + (isStart ? '★' : '') + '</span>' +
+        '<span class="page-tab-name">' + esc(p.name) + '</span>' +
+        '<span class="page-tab-count">' + p.widgets.length + '</span>' +
+        '</button>';
+    }).join('');
+    UI.el.pageTabs.innerHTML = html;
+  };
+
   UI.renderLayers = function () {
     if (!UI.el.layers || !UI.design) return;
-    var widgets = UI.design.widgets;
+    var widgets = UI.currentWidgets();
     if (!widgets.length) {
-      UI.el.layers.innerHTML = '<div class="inspector-note" style="padding:6px 8px">暂无控件，从左侧组件面板添加。</div>';
+      UI.el.layers.innerHTML = '<div class="inspector-note" style="padding:6px 8px">当前页面暂无控件，从左侧组件面板添加。</div>';
       return;
     }
     var html = '';
@@ -330,6 +376,20 @@
         UI.design.screen.grid = UI.clamp(Math.round(num(el.value, 8)), 0, 64);
         UI.syncCanvasControls();
         UI.renderCanvas();
+        UI.scheduleSave();
+      }
+      return;
+    }
+
+    if (scope === 'page') {
+      var page = UI.currentPage();
+      if (prop === 'name') {
+        page.name = el.value;
+        if (e.type === 'change' && !String(page.name).trim()) {
+          page.name = '页面 ' + (UI.design.pages.indexOf(page) + 1);
+          el.value = page.name;
+        }
+        UI.renderPageTabs();
         UI.scheduleSave();
       }
       return;
@@ -396,6 +456,13 @@
         UI.el.inspectorTitle.textContent = (G.TYPE_LABELS[w.type] || w.type) + ' · ' + w.name;
         UI.renderLayers();
       }
+      if (prop === 'action' && w.type === 'button') {
+        if (w.action === 'page' && !UI.findPage(w.target)) {
+          var other = UI.design.pages.filter(function (p) { return p.id !== UI.design.activePage; })[0] || UI.design.pages[0];
+          w.target = other ? other.id : '';
+        }
+        if (e.type === 'change') UI.renderInspector();
+      }
     }
 
     UI.renderCanvas();
@@ -420,7 +487,11 @@
         UI.el.imageFile.value = '';
         UI.el.imageFile.click();
       }
-    } else if (action === 'sample') UI.loadSample();
+    } else if (action === 'set-start') UI.setStartPage(UI.design.activePage);
+    else if (action === 'add-page') UI.addPage();
+    else if (action === 'duplicate-page') UI.duplicatePage(UI.design.activePage);
+    else if (action === 'delete-page') UI.deletePage(UI.design.activePage);
+    else if (action === 'sample') UI.loadSample();
     else if (action === 'clear') UI.clearCanvas();
     else if (action === 'export-zip') UI.exportZip();
   };
@@ -509,12 +580,14 @@
       '<h3>1. 设计</h3>',
       '<ul>',
       '<li>从左侧点击组件添加；拖动移动，拖 8 个控制点缩放。</li>',
-      '<li>右侧属性面板修改文字、颜色、圆角、数值和事件说明。</li>',
-      '<li>图层列表可以选中、显示/隐藏、锁定控件；属性面板里可置顶/置底。</li>',
-      '<li>“预览”会隐藏选择框；按钮和开关可以点击测试。</li>',
+      '<li>画布上方是页面标签：点击切换，★ 表示启动页，双击可改名；<b>＋ 新建</b> 添加页面。</li>',
+      '<li>没选中控件时，右侧“页面设置”可以改名、设为启动页、复制/删除页面。</li>',
+      '<li>按钮属性里的 <b>点击动作</b> 可以选择“跳转页面 / 返回上一页”。</li>',
+      '<li>右侧属性面板修改文字、颜色、圆角、数值；图层列表可显示/隐藏、锁定、调整层级。</li>',
+      '<li>“预览”会隐藏选择框；按钮可以跳页，开关可以点击测试。</li>',
       '</ul>',
       '<h3>2. 导出</h3>',
-      '<p>点击 <b>导出工程 ZIP</b>，会得到完整可烧录工程：</p>',
+      '<p>点击 <b>导出工程 ZIP</b>，会得到完整可烧录工程。多页面会生成页面路由和按钮跳转代码：</p>',
       '<pre>main.lua\nui_page.lua\nexd_air8607_rgb.lua\nflash.sh\nREADME.md\ndesign.json\nres/          # 上传的图片</pre>',
       '<h3>3. 烧录</h3>',
       '<p>需要合宙 <code>luatos-cli</code> 和 <code>LuatOS-SoC_V1028_Air1603_102.soc</code>。解压 ZIP 后：</p>',

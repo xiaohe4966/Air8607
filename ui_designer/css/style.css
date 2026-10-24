@@ -221,6 +221,81 @@ select { cursor: pointer; }
   background: rgba(8, 14, 23, .55);
 }
 .toolbar-left, .toolbar-right { display: flex; align-items: center; gap: 10px; }
+
+/* ---------- page tabs ---------- */
+.pagebar {
+  flex: 0 0 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 12px;
+  border-bottom: 1px solid rgba(33, 50, 74, .7);
+  background: rgba(9, 16, 26, .72);
+}
+.pagebar-label {
+  flex: 0 0 auto;
+  color: var(--dim-2);
+  font-size: 10px;
+  letter-spacing: .6px;
+  text-transform: uppercase;
+}
+.page-tabs {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow-x: auto;
+  padding: 4px 0;
+  scrollbar-width: none;
+}
+.page-tabs::-webkit-scrollbar { display: none; }
+.page-tab {
+  flex: 0 0 auto;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dim);
+  font-size: 11px;
+  white-space: nowrap;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.page-tab:hover { background: #12243a; border-color: rgba(34, 211, 238, .22); color: var(--text); }
+.page-tab.active {
+  background: linear-gradient(180deg, rgba(34, 211, 238, .14), rgba(34, 211, 238, .06));
+  border-color: rgba(34, 211, 238, .42);
+  color: #cffafe;
+}
+.page-tab-star { width: 11px; color: var(--dim-2); font-size: 10px; text-align: center; }
+.page-tab-star.on { color: #fbbf24; }
+.page-tab-name { max-width: 132px; overflow: hidden; text-overflow: ellipsis; }
+.page-tab-count {
+  min-width: 18px;
+  padding: 1px 4px;
+  border-radius: 7px;
+  background: rgba(125, 160, 200, .12);
+  color: var(--dim-2);
+  font-size: 9px;
+  text-align: center;
+}
+.page-add {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px dashed rgba(34, 211, 238, .34);
+  border-radius: 7px;
+  background: rgba(34, 211, 238, .04);
+  color: #a5f3fc;
+  font-size: 10px;
+}
+.page-add:hover { background: rgba(34, 211, 238, .12); border-color: rgba(34, 211, 238, .65); }
+
 .screen-chip {
   border: 1px solid rgba(34, 211, 238, .25);
   background: rgba(34, 211, 238, .06);

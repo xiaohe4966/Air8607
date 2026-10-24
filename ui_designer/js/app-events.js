@@ -24,6 +24,8 @@
     e.inspectorTitle = document.getElementById('inspectorTitle');
     e.inspectorSub = document.getElementById('inspectorSub');
     e.inspectorQuickActions = document.getElementById('inspectorQuickActions');
+    e.pageTabs = document.getElementById('pageTabs');
+    e.addPageBtn = document.getElementById('addPageBtn');
     e.layers = document.getElementById('layers');
     e.canvasBgColor = document.getElementById('canvasBgColor');
     e.canvasBgHex = document.getElementById('canvasBgHex');
@@ -108,6 +110,26 @@
       var btn = ev.target.closest('[data-type]');
       if (btn) UI.addWidget(btn.getAttribute('data-type'));
     });
+
+    if (e.pageTabs) {
+      e.pageTabs.addEventListener('click', function (ev) {
+        var tab = ev.target.closest('[data-page-id]');
+        if (tab) UI.switchPage(tab.getAttribute('data-page-id'));
+      });
+      e.pageTabs.addEventListener('dblclick', function (ev) {
+        var tab = ev.target.closest('[data-page-id]');
+        if (!tab) return;
+        UI.switchPage(tab.getAttribute('data-page-id'));
+        setTimeout(function () {
+          var input = UI.el.inspector.querySelector('[data-scope="page"][data-prop="name"]');
+          if (input) {
+            input.focus();
+            if (input.setSelectionRange) input.setSelectionRange(input.value.length, input.value.length);
+          }
+        }, 20);
+      });
+    }
+    if (e.addPageBtn) e.addPageBtn.addEventListener('click', function () { UI.addPage(); });
 
     e.canvasBgColor.addEventListener('focus', UI.beginEdit);
     e.canvasBgColor.addEventListener('input', function () {
@@ -217,7 +239,19 @@
       var pw = UI.findWidget(previewEl.getAttribute('data-id'));
       if (!pw) return;
       if (pw.type === 'button') {
-        UI.toast('按钮点击：' + (pw.name || pw.text || 'button'));
+        if (pw.action === 'page') {
+          var target = UI.findPage(pw.target);
+          if (target) {
+            if (target.id === UI.design.activePage) UI.toast('已在该页面：' + target.name);
+            else UI.previewGo(target.id);
+          } else {
+            UI.toast('按钮「' + (pw.name || pw.text || '') + '」还没有设置目标页面', 'error');
+          }
+        } else if (pw.action === 'back') {
+          UI.previewBack();
+        } else {
+          UI.toast('按钮点击：' + (pw.name || pw.text || 'button'));
+        }
       } else if (pw.type === 'switch') {
         var cur = Object.prototype.hasOwnProperty.call(UI.previewSwitches, pw.id) ? !!UI.previewSwitches[pw.id] : !!pw.checked;
         UI.previewSwitches[pw.id] = !cur;
