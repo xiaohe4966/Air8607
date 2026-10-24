@@ -34,6 +34,7 @@ Air8607/
 ├── airui_showcase/              # AirUI 视觉特效/组件示例
 ├── agri_greenhouse/             # 农业大棚仪表盘示例
 ├── examples/air8607_c3_wifi/    # Air8607 + ESP32-C3 WiFi 网卡示例
+├── examples/air8607_puzzle15/   # AirUI 数字华容道（15 拼图）小游戏
 ├── esp32c3_wifi_bridge/         # ESP32-C3 WiFi/HTTPS 网卡固件
 ├── firmware/                    # 固件下载说明（.soc 在 Releases）
 ├── docs/ui-designer.png         # UI Studio 截图
@@ -155,6 +156,15 @@ IP 180.113.152.47
 时间 2026-10-24 11:26:02
 ```
 
+## 数字华容道小游戏
+
+[`examples/air8607_puzzle15/`](./examples/air8607_puzzle15/) 是一个 4×4 数字华容道：点击与空格相邻的数字块即可滑动，右侧实时显示步数和用时，完成后弹出结算卡片，可一键再来一局。
+
+- 纯 Lua、无网络依赖；`puzzle_core.lua`（移动规则/可解性/洗牌）与 `ui_puzzle.lua`（AirUI 界面）分离，逻辑可在 PC 上直接测试。
+- 洗牌从复原状态随机走 320 步，保证局面一定可解，并过滤掉曼哈顿距离 < 40 的简单局面。
+- 点击带音效，界面内可直接拖动滑块调节屏幕亮度（PWM 背光）和音量（DAC + HT6873 功放）；音频初始化会重配 I2C1，示例已在每次播放后恢复 GT911 触摸总线。
+- 烧录：`.soc` 放到示例目录后执行 `./flash.sh`；9 寸屏把 `main.lua` 里的 `SCREEN_SIZE` 改为 `9`。
+
 ## 验证状态
 
 - factory 工程和 UI Studio 生成工程均已通过 `luatos-cli` 的 Lua 编译与 LuaDB 打包验证。
@@ -165,6 +175,7 @@ IP 180.113.152.47
 - Air8607 的 `air8607_c3_wifi` 示例已烧录，日志确认 UART2 客户端启动；端到端网络信息显示需要在 J110 上接好三根线并在配网页填写 WiFi 后验证。
 - 尚未做屏幕拍照的像素级视觉检查；滑块、开关等控件的触摸回调未逐项做人工验收。
 - 9 英寸预设尚未在 9 英寸实机上验证。9 寸面板驱动 IC 在官方文档中出现 JD9165BA，也有 Air8602 9 寸工程使用 HX8282；如果显示异常，优先确认实际面板型号。
+- 数字华容道示例已通过 Lua 语法检查、`puzzle_core.lua` 的 1234 项 PC 端逻辑测试和 `ui_puzzle.lua` 的 45 项 mock AirUI 冒烟测试；已实机烧录脚本区，日志确认音频（DAC / `click.wav` 16 kHz 单声道）、GT911 触摸、背光与局面生成正常。音效听感、逐级亮度变化和触摸手感尚未人工验收。
 
 ## 重要说明
 
