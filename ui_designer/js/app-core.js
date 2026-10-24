@@ -633,6 +633,43 @@
     UI.toast('已复制控件');
   };
 
+  UI.clipboard = null;
+  UI.pasteCount = 0;
+
+  UI.copySelected = function () {
+    var w = UI.findWidget(UI.selectedId);
+    if (!w) {
+      UI.toast('先选中一个控件再复制', 'error');
+      return;
+    }
+    UI.clipboard = JSON.parse(JSON.stringify(w));
+    UI.pasteCount = 0;
+    UI.toast('已复制控件：' + (w.name || w.type) + '（⌘V 粘贴，可跨页面）');
+  };
+
+  UI.pasteWidget = function () {
+    if (!UI.clipboard) {
+      UI.toast('剪贴板为空，先选中控件按 ⌘C', 'error');
+      return;
+    }
+    var page = UI.currentPage();
+    UI.pushHistory();
+    UI.pasteCount += 1;
+    var copy = JSON.parse(JSON.stringify(UI.clipboard));
+    copy.id = G.uid('w');
+    var base = /^[A-Za-z_][A-Za-z0-9_]*$/.test(String(copy.name || '')) ? copy.name : copy.type;
+    copy.name = UI.uniqueWidgetName(base + '_paste');
+    var off = 12 * UI.pasteCount;
+    copy.x = clamp(num(copy.x, 0) + off, 0, Math.max(0, W - num(copy.w, 1)));
+    copy.y = clamp(num(copy.y, 0) + off, 0, Math.max(0, H - num(copy.h, 1)));
+    page.widgets.push(copy);
+    UI.design = G.normalizeState(UI.design);
+    UI.selectedId = copy.id;
+    UI.renderAll();
+    UI.saveNow();
+    UI.toast('已粘贴到「' + page.name + '」：' + copy.name);
+  };
+
   UI.deleteSelected = function () {
     var w = UI.findWidget(UI.selectedId);
     if (!w) return;

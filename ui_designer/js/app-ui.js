@@ -564,11 +564,86 @@
     }
   };
 
+  /* ---------------- code preview ---------------- */
+  function codeFileText(entry) {
+    if (typeof entry === 'string') return entry;
+    if (entry && typeof entry.text === 'string') return entry.text;
+    if (entry && entry.bytes) return '[二进制资源 · ' + entry.bytes.length + ' 字节]';
+    return '';
+  }
+
+  UI.previewCode = function () {
+    try {
+      UI.commitEdit();
+      UI.design = G.normalizeState(UI.design);
+      var out = G.generateProject(UI.design);
+      UI.codeFiles = out.files;
+      var names = Object.keys(out.files).filter(function (n) { return n.indexOf('res/') !== 0; });
+      UI.codeCurrent = out.files['ui_page.lua'] ? 'ui_page.lua' : names[0];
+      var html = '<div class="code-preview">' +
+        '<div class="code-toolbar">' +
+          '<div class="code-tabs">' +
+            names.map(function (n) {
+              return '<button class="code-tab" data-code-file="' + n + '">' + n + '</button>';
+            }).join('') +
+          '</div>' +
+          '<span class="code-meta" id="codeMeta"></span>' +
+          '<button class="ghost-btn" id="codeCopyBtn">复制当前文件</button>' +
+        '</div>' +
+        '<pre id="codeBody"></pre>' +
+        '</div>';
+      UI.openModal('生成代码预览', html, { wide: true });
+      UI.renderCodePreview(UI.codeCurrent);
+    } catch (e) {
+      console.error(e);
+      UI.toast('生成代码失败：' + (e.message || e), 'error');
+    }
+  };
+
+  UI.renderCodePreview = function (name) {
+    if (!UI.codeFiles || !UI.codeFiles[name]) return;
+    UI.codeCurrent = name;
+    var text = codeFileText(UI.codeFiles[name]);
+    var body = document.getElementById('codeBody');
+    if (body) body.textContent = text;
+    var meta = document.getElementById('codeMeta');
+    if (meta) meta.textContent = text.split('\n').length + ' 行 · ' + new Blob([text]).size + ' B';
+    var tabs = document.querySelectorAll('[data-code-file]');
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].classList.toggle('active', tabs[i].getAttribute('data-code-file') === name);
+    }
+  };
+
+  UI.copyCodeFile = function () {
+    var name = UI.codeCurrent;
+    if (!name || !UI.codeFiles) return;
+    var text = codeFileText(UI.codeFiles[name]);
+    function done() { UI.toast('已复制 ' + name); }
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch (e) { /* 交给浏览器默认行为 */ }
+      ta.remove();
+      done();
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else {
+      fallback();
+    }
+  };
+
   /* ---------------- modal / help ---------------- */
-  UI.openModal = function (title, html) {
+  UI.openModal = function (title, html, opts) {
     if (!UI.el.modal) return;
     UI.el.modalTitle.textContent = title;
     UI.el.modalBody.innerHTML = html;
+    var card = UI.el.modal.querySelector('.modal-card');
+    if (card) card.classList.toggle('code-wide', !!(opts && opts.wide));
     UI.el.modal.classList.remove('hidden');
   };
 
@@ -583,12 +658,14 @@
       '<li>从左侧点击组件添加；拖动移动，拖 8 个控制点缩放。</li>',
       '<li>画布上方是页面标签：点击切换，★ 表示启动页，双击可改名；<b>＋ 新建</b> 添加页面。</li>',
       '<li>页面标签悬停时会显示 <b>⧉</b>：点一下就能复制该页（副本紧跟在后面并自动打开，可直接修改）；没选中控件时 ⌘/Ctrl + D 也可以复制当前页。</li>',
+      '<li>选中控件后 <b>⌘/Ctrl + C</b> 复制，切换到任意页面按 <b>⌘/Ctrl + V</b> 粘贴（可跨页面，连续粘贴会自动错开位置）。</li>',
       '<li>没选中控件时，右侧“页面设置”可以改名、设为启动页、复制/删除页面。</li>',
       '<li>按钮属性里的 <b>点击动作</b> 可以选择“跳转页面 / 返回上一页”。</li>',
       '<li>右侧属性面板修改文字、颜色、圆角、数值；图层列表可显示/隐藏、锁定、调整层级。</li>',
       '<li>“预览”会隐藏选择框；按钮可以跳页，开关可以点击测试。</li>',
       '</ul>',
       '<h3>2. 导出</h3>',
+      '<p>点击顶栏 <b>代码</b> 可以预览将要生成的 Lua 文件（默认打开 <code>ui_page.lua</code>），支持单文件复制，确认无误后再导出 ZIP。</p>',
       '<p>点击 <b>导出工程 ZIP</b>，会得到完整可烧录工程。多页面会生成页面路由和按钮跳转代码：</p>',
       '<pre>main.lua\nui_page.lua\nexd_air8607_rgb.lua\nflash.sh\nREADME.md\ndesign.json\nres/          # 上传的图片</pre>',
       '<h3>3. 烧录</h3>',
@@ -598,6 +675,7 @@
       '<h3>4. 快捷键</h3>',
       '<ul>',
       '<li><code>Delete</code> 删除，<code>⌘/Ctrl + D</code> 复制控件（未选中控件时复制当前页）</li>',
+      '<li><code>⌘/Ctrl + C</code> 复制控件，<code>⌘/Ctrl + V</code> 粘贴（可跨页面）</li>',
       '<li><code>⌘/Ctrl + Z</code> 撤销，<code>Shift + ⌘/Ctrl + Z</code> 重做</li>',
       '<li>方向键移动 1px，<code>Shift + 方向键</code> 移动 10px</li>',
       '<li><code>Esc</code> 取消选择 / 退出预览</li>',

@@ -47,6 +47,7 @@
     e.redoBtn = document.getElementById('redoBtn');
     e.exportZipBtn = document.getElementById('exportZipBtn');
     e.exportJsonBtn = document.getElementById('exportJsonBtn');
+    e.codeBtn = document.getElementById('codeBtn');
     e.importBtn = document.getElementById('importBtn');
     e.previewBtn = document.getElementById('previewBtn');
     e.helpBtn = document.getElementById('helpBtn');
@@ -80,6 +81,7 @@
     });
 
     e.exportJsonBtn.addEventListener('click', UI.exportJson);
+    if (e.codeBtn) e.codeBtn.addEventListener('click', UI.previewCode);
     e.exportZipBtn.addEventListener('click', UI.exportZip);
     e.previewBtn.addEventListener('click', UI.togglePreview);
     e.helpBtn.addEventListener('click', UI.showHelp);
@@ -462,6 +464,14 @@
         else UI.duplicateSelected();
         return;
       }
+      if (meta && (key === 'c' || key === 'v')) {
+        if (editing) return;
+        if (UI.el.modal && !UI.el.modal.classList.contains('hidden')) return;
+        ev.preventDefault();
+        if (key === 'c') UI.copySelected();
+        else UI.pasteWidget();
+        return;
+      }
 
       if (key === 'escape') {
         if (UI.el.modal && !UI.el.modal.classList.contains('hidden')) {
@@ -505,6 +515,16 @@
     if (UI.el.modal) {
       UI.el.modal.addEventListener('click', function (ev) {
         if (ev.target === UI.el.modal) UI.closeModal();
+      });
+    }
+    if (UI.el.modalBody) {
+      UI.el.modalBody.addEventListener('click', function (ev) {
+        var tab = ev.target.closest('[data-code-file]');
+        if (tab) {
+          UI.renderCodePreview(tab.getAttribute('data-code-file'));
+          return;
+        }
+        if (ev.target.closest('#codeCopyBtn')) UI.copyCodeFile();
       });
     }
   };
