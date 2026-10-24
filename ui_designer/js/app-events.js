@@ -114,7 +114,12 @@
     if (e.pageTabs) {
       e.pageTabs.addEventListener('click', function (ev) {
         var tab = ev.target.closest('[data-page-id]');
-        if (tab) UI.switchPage(tab.getAttribute('data-page-id'));
+        if (!tab) return;
+        if (ev.target.closest('[data-tab-action="duplicate"]')) {
+          UI.duplicatePage(tab.getAttribute('data-page-id'));
+          return;
+        }
+        UI.switchPage(tab.getAttribute('data-page-id'));
       });
       e.pageTabs.addEventListener('dblclick', function (ev) {
         var tab = ev.target.closest('[data-page-id]');
@@ -453,7 +458,8 @@
       if (meta && key === 'd') {
         if (editing) return;
         ev.preventDefault();
-        UI.duplicateSelected();
+        if (ev.shiftKey || !UI.selectedId) UI.duplicatePage();
+        else UI.duplicateSelected();
         return;
       }
 

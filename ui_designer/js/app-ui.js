@@ -322,6 +322,7 @@
         '<span class="page-tab-star' + (isStart ? ' on' : '') + '">' + (isStart ? '★' : '') + '</span>' +
         '<span class="page-tab-name">' + esc(p.name) + '</span>' +
         '<span class="page-tab-count">' + p.widgets.length + '</span>' +
+        '<span class="page-tab-dup" data-tab-action="duplicate" title="复制此页面">⧉</span>' +
         '</button>';
     }).join('');
     UI.el.pageTabs.innerHTML = html;
@@ -581,6 +582,7 @@
       '<ul>',
       '<li>从左侧点击组件添加；拖动移动，拖 8 个控制点缩放。</li>',
       '<li>画布上方是页面标签：点击切换，★ 表示启动页，双击可改名；<b>＋ 新建</b> 添加页面。</li>',
+      '<li>页面标签悬停时会显示 <b>⧉</b>：点一下就能复制该页（副本紧跟在后面并自动打开，可直接修改）；没选中控件时 ⌘/Ctrl + D 也可以复制当前页。</li>',
       '<li>没选中控件时，右侧“页面设置”可以改名、设为启动页、复制/删除页面。</li>',
       '<li>按钮属性里的 <b>点击动作</b> 可以选择“跳转页面 / 返回上一页”。</li>',
       '<li>右侧属性面板修改文字、颜色、圆角、数值；图层列表可显示/隐藏、锁定、调整层级。</li>',
@@ -595,7 +597,7 @@
       '<p>也可以使用仓库根目录的 <code>flash_project.sh</code>。脚本会自动平铺文件，避免 LuaDB 27 字节文件名限制。</p>',
       '<h3>4. 快捷键</h3>',
       '<ul>',
-      '<li><code>Delete</code> 删除，<code>⌘/Ctrl + D</code> 复制</li>',
+      '<li><code>Delete</code> 删除，<code>⌘/Ctrl + D</code> 复制控件（未选中控件时复制当前页）</li>',
       '<li><code>⌘/Ctrl + Z</code> 撤销，<code>Shift + ⌘/Ctrl + Z</code> 重做</li>',
       '<li>方向键移动 1px，<code>Shift + 方向键</code> 移动 10px</li>',
       '<li><code>Esc</code> 取消选择 / 退出预览</li>',
