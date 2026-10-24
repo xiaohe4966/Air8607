@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax-and-generator:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Syntax check UI Studio
+        run: |
+          for f in ui_designer/js/*.js; do
+            node --check "$f"
+          done
+
+      - name: Generate a sample project
+        run: |
+          node - <<'NODE'
+          const g = require('./ui_designer/js/generator.js');
+          const out = g.generateProject(g.sampleProject());
+          const required = ['main.lua', 'ui_page.lua', 'exd_air8607_rgb.lua', 'flash.sh', 'design.json'];
+          for (const name of required) {
+            if (!Object.prototype.hasOwnProperty.call(out.files, name)) {
+              throw new Error('missing generated file: ' + name);
+            }
+          }
+          const flash = typeof out.files['flash.sh'] === 'string'
+            ? out.files['flash.sh']
+            : out.files['flash.sh'].text;
+          if (!flash.includes('! -name "*.soc"')) {
+            throw new Error('flash.sh must skip .soc files when flattening');
+          }
+          const zip = g.zipStore(out.files);
+          if (!zip || zip.length < 1000) {
+            throw new Error('ZIP output is too small');
+          }
+          console.log('generated files:', Object.keys(out.files).join(', '));
+          console.log('sample ZIP bytes:', zip.length);
+          NODE

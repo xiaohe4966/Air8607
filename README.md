@@ -2,6 +2,7 @@
 
 面向 **Air8607（Air1603 / Air1101）9 英寸、10 英寸 1024×600 触摸屏** 的 LuatOS 开发仓库：包含可烧录的 factory 工程、AirUI 示例、Mac 原生烧录脚本，以及一个**浏览器里拖拽设计界面并生成可烧录 Lua 工程**的 UI Studio。
 
+[![CI](https://github.com/xiaohe4966/Air8607/actions/workflows/ci.yml/badge.svg)](https://github.com/xiaohe4966/Air8607/actions/workflows/ci.yml)
 [![Deploy UI Studio](https://github.com/xiaohe4966/Air8607/actions/workflows/pages.yml/badge.svg)](https://github.com/xiaohe4966/Air8607/actions/workflows/pages.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22d3ee.svg)](./LICENSE)
 
@@ -127,6 +128,7 @@ chmod +x flash.sh
 
 - `factory/main.lua` 里的 `PROJECT_KEY` 已替换为 `YOUR_PROJECT_KEY`，避免开源仓库泄露密钥。使用合宙 IoT/FOTA 功能前请填自己的项目密钥。
 - 固件 `.soc` 不提交到 Git，放在 [Releases](https://github.com/xiaohe4966/Air8607/releases/latest)。
+- `factory/res/` 的图片/视频/字体来自合宙官方示例，仅用于演示；商业使用请替换并确认素材授权。
 - UI Studio 的二维码预览是示意图；烧录后由 AirUI 生成真实二维码。
 - 上传图片会放进生成的 `res/`，烧录脚本平铺到 `/luadb/`，代码引用 `/luadb/<文件名>`。脚本区 4096 KB，图片建议压缩到 300 KB 以内。
 

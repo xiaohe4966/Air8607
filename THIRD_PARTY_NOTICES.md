@@ -23,9 +23,11 @@
 
 - `airui_showcase/`、`agri_greenhouse/` 来自合宙 Air8607 示例工程，MIT License。
 
-## 固件
+## 固件与媒体资源
 
 `firmware/*.soc` 为合宙官方发布的 Air1603 固件，未提交到 Git 仓库，而是放在 GitHub Releases 中，方便直接下载。固件版权归合宙 openLuat 所有。
+
+`factory/res/` 中的图片、视频、字体等媒体资源来自合宙官方 factory 工程，仅用于功能演示。若要用于商业产品，请替换为自己的资源，并自行确认原始素材的授权。
 
 ## MIT License 全文
 
