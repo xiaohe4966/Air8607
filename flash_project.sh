@@ -98,14 +98,14 @@ fi
 FLAT="$(mktemp -d "${TMPDIR:-/tmp}/air8607-project.XXXXXX")"
 trap 'rm -rf "$FLAT"' EXIT
 
-DUPES="$(cd "$PROJECT" && find . -type f ! -path '*/.git/*' ! -name '.DS_Store' ! -name 'flash.sh' -exec basename {} \; | sort | uniq -d)"
+DUPES="$(cd "$PROJECT" && find . -type f ! -path '*/.git/*' ! -name '.DS_Store' ! -name 'flash.sh' ! -name '*.soc' -exec basename {} \; | sort | uniq -d)"
 if [[ -n "$DUPES" ]]; then
   echo "错误：工程中存在同名文件，平铺后会冲突：" >&2
   echo "$DUPES" >&2
   exit 1
 fi
 
-find "$PROJECT" -type f ! -path '*/.git/*' ! -name '.DS_Store' ! -name 'flash.sh' -exec cp {} "$FLAT/" \;
+find "$PROJECT" -type f ! -path '*/.git/*' ! -name '.DS_Store' ! -name 'flash.sh' ! -name '*.soc' -exec cp {} "$FLAT/" \;
 
 COUNT="$(find "$FLAT" -type f | wc -l | tr -d ' ')"
 echo "工程: $PROJECT (平铺 $COUNT 个文件)"
