@@ -41,7 +41,7 @@ Air8607 的 J110 排针（`1 RX1`、`2 TX1`、`3 GND`、`4 VBAT`、`5 RX2`、`6 
 | 文件 | 说明 |
 | --- | --- |
 | `main.lua` | 入口：显示、触摸、背光、AirUI 初始化、启动网络客户端 |
-| `ui_page.lua` | 多页面 UI；新增 `infoTime` 标签和 `M.set_network_info` |
+| `ui_page.lua` | 多页面 UI；新增 `infoTime` 标签和 `M.set_network_info`（收到时间后每秒本地递增） |
 | `net_bridge.lua` | UART2 行协议客户端，轮询 ESP32-C3 并更新 UI |
 | `exd_air8607_rgb.lua` | Air8607 RGB 屏初始化扩展库 |
 | `flash.sh` | Mac/Linux 烧录脚本 |
@@ -104,6 +104,18 @@ ESP32-C3 → Air8607（每行一个 JSON）：
 
 请求只在 ESP32-C3 启动连接 WiFi 后执行一次，后续 `FETCH` 返回缓存结果。
 需要重新请求时，重启 ESP32-C3 即可。
+
+Air8607 收到 `date` 后只在本地用 `mcu.ticks()` 每秒递增显示，不会每秒重新走串口或 HTTPS。
+因此如果只重启 Air8607、C3 一直运行，时间会从 C3 最近一次同步的结果开始走；
+两边一起断电重启时，时间与服务器同步。
+
+实机日志（Air8607，2026-10-25）：
+
+```text
+I/user.net_bridge UART2 已启动，等待 ESP32-C3 网络信息
+I/user.net_bridge 公网 IP: 112.21.22.155  时间: 2026-10-25 09:12:10  local: 172.22.22.119
+I/user.net_bridge 已取得网络结果，停止轮询
+```
 
 ## 注意
 

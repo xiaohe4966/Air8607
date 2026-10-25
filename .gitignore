@@ -18,5 +18,8 @@ esp32c3_wifi_bridge/sdkconfig
 esp32c3_wifi_bridge/sdkconfig.old
 esp32c3_wifi_bridge/managed_components/
 
+# 本机私有配置：API token 等，只提交 .example
+esp32c3_wifi_bridge/main/secrets.h
+
 # macOS
 ._*

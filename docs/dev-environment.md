@@ -17,7 +17,7 @@ cd Air8607
 
 | 工具 | 版本 | 用途 | 备注 |
 | --- | --- | --- | --- |
-| ESP-IDF | 5.4.x（验证过 5.4.3） | 编译/烧录 ESP32-C3 固件 | macOS / Linux / Windows 都有官方安装包 |
+| ESP-IDF | 5.4.x（验证过 5.4.4） | 编译/烧录 ESP32-C3 固件 | macOS / Linux / Windows 都有官方安装包 |
 | `luatos-cli` | 任意近期版本 | 编译 Lua、烧录 Air8607 | 合宙官方工具 |
 | Python 3 | ≥ 3.9 | 串口日志小脚本 | 需 `pip install pyserial` |
 | 浏览器 | 任意 | 打开 UI Studio | `python3 -m http.server 8000` 后访问 `http://127.0.0.1:8000/ui_designer/` |

@@ -68,10 +68,19 @@ local game = core.new(N)
 local tiles = {}
 local status = { won = false, started = 0, elapsed = 0, timer = nil }
 
+-- Air1603 的 mcu.ticks() 约 20ms/tick（hz=50），必须按 hz 折算成毫秒
+local TICKS_PER_MS = 1
+if mcu and mcu.hz then
+    local hz = mcu.hz()
+    if type(hz) == "number" and hz > 1 then
+        TICKS_PER_MS = hz / 1000
+    end
+end
+
 local function now_ms()
     if mcu and mcu.ticks then
         local v = mcu.ticks()
-        if v then return v end
+        if v then return v / TICKS_PER_MS end
     end
     return os.time() * 1000
 end

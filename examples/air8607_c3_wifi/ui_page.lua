@@ -724,6 +724,64 @@ local function ensure_page(page)
     return root
 end
 
+-- 服务器时间只在联网时同步一次，之后用 mcu.ticks 本地递增，避免每秒都走串口/HTTPS
+local clock = { active = false, timer = nil, applied = 0, base_ms = 0 }
+
+local function now_ms()
+    if mcu and mcu.ticks then
+        local v = mcu.ticks()
+        if v then return v end
+    end
+    return os.time() * 1000
+end
+
+local function days_in_month(y, m)
+    local days = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
+    if m == 2 and y % 4 == 0 and (y % 100 ~= 0 or y % 400 == 0) then
+        return 29
+    end
+    return days[m]
+end
+
+local function advance_clock(seconds)
+    clock.s = clock.s + seconds
+    clock.mi = clock.mi + math.floor(clock.s / 60)
+    clock.s = clock.s % 60
+    clock.h = clock.h + math.floor(clock.mi / 60)
+    clock.mi = clock.mi % 60
+    local days = math.floor(clock.h / 24)
+    clock.h = clock.h % 24
+    while days > 0 do
+        days = days - 1
+        clock.d = clock.d + 1
+        if clock.d > days_in_month(clock.y, clock.mo) then
+            clock.d = 1
+            clock.mo = clock.mo + 1
+            if clock.mo > 12 then
+                clock.mo = 1
+                clock.y = clock.y + 1
+            end
+        end
+    end
+end
+
+local function clock_text()
+    return string.format("%04d-%02d-%02d %02d:%02d:%02d",
+        clock.y, clock.mo, clock.d, clock.h, clock.mi, clock.s)
+end
+
+local function clock_tick()
+    if not clock.active then return end
+    local elapsed = math.floor((now_ms() - clock.base_ms) / 1000)
+    if elapsed <= clock.applied then return end
+    advance_clock(elapsed - clock.applied)
+    clock.applied = elapsed
+    local widgets = M.pages.page_1 and M.pages.page_1.widgets
+    if widgets and widgets.infoTime then
+        widgets.infoTime:set_text("时间 " .. clock_text())
+    end
+end
+
 --[[更新控制台「设备信息」中的公网 IP 和时间
 @param string|nil ip    API 返回的公网 IP
 @param string|nil date  已格式化的服务器时间，例如 2026-10-24 11:26:02
@@ -734,7 +792,22 @@ function M.set_network_info(ip, date)
     if widgets.infoIp then
         widgets.infoIp:set_text("IP " .. ((ip and ip ~= "") and ip or "--"))
     end
-    if widgets.infoTime then
+    if not widgets.infoTime then return end
+
+    local y, mo, d, h, mi, s = (date or ""):match(
+        "^(%d%d%d%d)-(%d%d)-(%d%d) (%d%d):(%d%d):(%d%d)")
+    if y then
+        clock.y, clock.mo, clock.d = tonumber(y), tonumber(mo), tonumber(d)
+        clock.h, clock.mi, clock.s = tonumber(h), tonumber(mi), tonumber(s)
+        clock.active = true
+        clock.base_ms = now_ms()
+        clock.applied = 0
+        widgets.infoTime:set_text("时间 " .. clock_text())
+        if not clock.timer then
+            clock.timer = sys.timerLoopStart(clock_tick, 1000)
+        end
+    else
+        clock.active = false
         widgets.infoTime:set_text("时间 " .. ((date and date ~= "") and date or "--"))
     end
 end

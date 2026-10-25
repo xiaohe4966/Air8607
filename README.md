@@ -35,6 +35,7 @@ Air8607/
 ├── agri_greenhouse/             # 农业大棚仪表盘示例
 ├── examples/air8607_c3_wifi/    # Air8607 + ESP32-C3 WiFi 网卡示例
 ├── examples/air8607_puzzle15/   # AirUI 数字华容道（15 拼图）小游戏
+├── examples/air8607_photo_album/# AirUI 电子相册（网络照片轮播）
 ├── esp32c3_wifi_bridge/         # ESP32-C3 WiFi/HTTPS 网卡固件
 ├── firmware/                    # 固件下载说明（.soc 在 Releases）
 ├── docs/ui-designer.png         # UI Studio 截图
@@ -165,17 +166,29 @@ IP 180.113.152.47
 - 点击带音效，界面内可直接拖动滑块调节屏幕亮度（PWM 背光）和音量（DAC + HT6873 功放）；音频初始化会重配 I2C1，示例已在每次播放后恢复 GT911 触摸总线。
 - 烧录：`.soc` 放到示例目录后执行 `./flash.sh`；9 寸屏把 `main.lua` 里的 `SCREEN_SIZE` 改为 `9`。
 
+## 电子相册
+
+[`examples/air8607_photo_album/`](./examples/air8607_photo_album/) 是一个全屏电子相册：照片经 ESP32-C3 从 `img.he66.cn` 下载到 RAM，按设定间隔自动轮播。
+
+- 默认 60 秒换一张，设置面板里可拖到 10–300 秒；支持暂停、立即下一张、90° 循环旋转。
+- 背光亮度 10–100% 可直接在界面里调；「喜欢 / 取消喜欢」会调用接口记录。
+- 单张照片最多等 **600 秒**，超时或断流后自动退避重试；当前图显示时后台预取下一张，切换通常无等待。
+- 照片接口 token 只放在 C3 固件的 `main/secrets.h`（已 git-ignore），Lua 脚本和仓库里没有 token。
+- 烧录：`.soc` 放到示例目录后执行 `./flash.sh`；C3 端需要 1.1.0 及以上固件。
+
 ## 验证状态
 
 - factory 工程和 UI Studio 生成工程均已通过 `luatos-cli` 的 Lua 编译与 LuaDB 打包验证。
 - 已在 **Air8607 + 10 英寸 1024×600 + GT911** 实机上完成 LuatOS `V1028` 内核实机全量烧录：显示初始化、AirUI、GT911 触摸、背光均正常。
 - 已在实机上验证 UI Studio 多页面示例：点击「更多设置 →」进入第二页，再点「← 返回控制台」返回启动页；页面按需构建，串口日志确认 `M.go()` / `M.back()` 和 `set_hidden` 切换均正常。
 - 实机日志、全量烧录失败/恢复记录和复现命令见 [docs/hardware-validation.md](./docs/hardware-validation.md)。
-- ESP32-C3 固件已用 ESP-IDF 5.4.3 编译并烧录到 QFN32 rev0.3（4 MB MXIC flash）；启动日志确认 UART1 GPIO4/5、115200 8N1 和 `Air8607-C3` 配网热点正常。
-- Air8607 的 `air8607_c3_wifi` 示例已烧录，日志确认 UART2 客户端启动；端到端网络信息显示需要在 J110 上接好三根线并在配网页填写 WiFi 后验证。
+- ESP32-C3 固件已用 ESP-IDF 5.4.4 编译（1.1.1）并烧录到 QFN32 rev0.3（4 MB MXIC flash）；启动日志确认 UART1 GPIO4/5、115200 8N1、WiFi 联网和 `Air8607-C3` 配网热点正常。这颗 rev0.3 的 ROM 经 CH343 写 flash 时只接受 256 字节数据块，烧录脚本已内置分块处理。
+- Air8607 的 `air8607_c3_wifi` 示例已完成端到端验证：J110 接好 UART2 后，ESP32-C3 联网并请求 HTTPS，Air8607 显示公网 IP 和服务器时间，时间每秒本地递增。
 - 尚未做屏幕拍照的像素级视觉检查；滑块、开关等控件的触摸回调未逐项做人工验收。
 - 9 英寸预设尚未在 9 英寸实机上验证。9 寸面板驱动 IC 在官方文档中出现 JD9165BA，也有 Air8602 9 寸工程使用 HX8282；如果显示异常，优先确认实际面板型号。
 - 数字华容道示例已通过 Lua 语法检查、`puzzle_core.lua` 的 1234 项 PC 端逻辑测试和 `ui_puzzle.lua` 的 45 项 mock AirUI 冒烟测试；已实机烧录脚本区，日志确认音频（DAC / `click.wav` 16 kHz 单声道）、GT911 触摸、背光与局面生成正常。音效听感、逐级亮度变化和触摸手感尚未人工验收。
+- 电子相册示例已完成端到端验证（2026-10-25）：C3 固件 1.1.1 用 ESP-IDF 5.4.4 编译并烧录（rev0.3 ROM 按 256 字节分块写入），Air8607 日志确认照片头 `id/w/h/len` 正确、100–470 KB JPEG 落盘 `/ram/album_a.jpg`、`album_b.jpg` 并显示，预取和 60 秒自动轮播正常；期间修复了每秒重发请求、C3 读错响应头导致 `id=0`、取消后在途字节污染下一帧、换图盖住按钮、换图瞬间黑屏五个问题。
+- 已修正 Air1603 上 `mcu.ticks()` 的时间基准：它约 20 ms/tick，之前按 1 ms 使用会让电子相册的保活、轮播和 600 秒超时慢 20 倍，数字华容道的计时器也受影响；两处都已按 `mcu.hz()` 折算。
 
 ## 重要说明
 

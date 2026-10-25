@@ -68,7 +68,7 @@ Air8607 侧使用 LuatOS `uart.setup(2, ...)`，对应 UART2；J110 的 `RX2/TX2
 
 ## 1. 烧录 ESP32-C3
 
-要求 ESP-IDF 5.4 或兼容的 5.x。已验证版本：ESP-IDF 5.4.3。
+要求 ESP-IDF 5.4 或兼容的 5.x。已验证版本：ESP-IDF 5.4.4。
 
 ```bash
 cd esp32c3_wifi_bridge
@@ -154,7 +154,7 @@ Air8607 → ESP32-C3：
 ESP32-C3 → Air8607：
 
 ```json
-{"type":"hello","fw":"1.0.0","proto":1}
+{"type":"hello","fw":"1.1.1","proto":1}
 {"type":"netinfo","ok":true,"code":1,"msg":"ok","ip":"180.113.152.47","date":"2026-10-24 11:26:02","time":1792812362,"local_ip":"192.168.1.23"}
 ```
 
@@ -167,13 +167,15 @@ ESP32-C3 → Air8607：
 `ip` 是 API 返回的**公网 IP**（`data` 字段）；`local_ip` 是 ESP32-C3 在局域网里的地址。
 `date` 已从 `20261024 11:26:02` 规范化为 `2026-10-24 11:26:02`。
 `time` 是 Unix 时间戳，可能是数字或字符串，Air8607 侧不依赖它。
+Air8607 用 `date` 作为基准、`mcu.ticks()` 计算经过的秒数，每秒刷新 `infoTime`；
+C3 只在自身启动时请求一次，因此单独重启 Air8607 时起点是 C3 最近一次同步结果。
 
 ## 5. 已完成的验证
 
 ESP32-C3：
 
 ```text
-I (451) air8607-c3: Air8607 ESP32-C3 WiFi bridge 1.0.0
+I (451) air8607-c3: Air8607 ESP32-C3 WiFi bridge 1.1.1
 I (451) air8607-c3: UART bridge: GPIO4 TX -> Air8607 RX2, GPIO5 RX <- Air8607 TX2
 I (561) air8607-c3: UART1 ready: TX=GPIO4 RX=GPIO5 115200 8N1
 W (651) air8607-c3: no WiFi credentials; starting provisioning AP
@@ -183,7 +185,11 @@ I (731) air8607-c3: provisioning web server listening on http://192.168.4.1/
 
 - 芯片：ESP32-C3 QFN32 rev v0.3，4 MB MXIC flash，MAC `60:55:f9:71:d8:e0`。
 - 固件编译、烧录、启动、UART1 初始化、配网 AP + HTTP 服务均通过。
-- 已确认 `/dev/cu.wchusbserial...` 可以稳定写入，`/dev/cu.usbmodem...` 在本机 Hub 上会写失败。
+- 这颗 rev0.3 的 ROM 经 CH343（`/dev/cu.usbmodem...`）写 flash 时只接受 256 字节数据块，
+  直接用 `idf.py flash` 或标准 0x400 块会报 `invalid message format` / checksum 错误；
+  `flash_c3.sh` 已通过 `esptool_256.py` 自动分块，实测完整烧录并校验通过。
+- 照片代理（1.1.0+，实测 1.1.1）见
+  [`esp32c3_wifi_bridge/README.md`](../esp32c3_wifi_bridge/README.md#photo-proxy-firmware-110)。
 
 Air8607：
 
@@ -198,8 +204,9 @@ I/user.main AirUI page ready: air8607_c3_wifi
 
 - 示例通过 `luatos-cli build luac` 编译。
 - 已烧录到 Air8607 实机，UART2 客户端启动正常。
-- **端到端**（真实 WiFi + HTTPS + Air8607 显示）需要在 J110 接好三根线，并在配网页填写 WiFi 后复测。
-  当前代码路径已经打通，但受限于实机接线/凭据，尚未记录最终 API 返回值在屏幕上的照片。
+- **端到端已打通**（2026-10-25）：J110 接好 RX2/TX2/GND 后，C3 用已保存的 2.4 GHz WiFi 联网并完成 HTTPS 请求，
+  Air8607 日志收到 `IP 112.21.22.155`、服务器时间 `2026-10-25 09:12:10`、C3 局域网地址 `172.22.22.119`；
+  「设备信息」卡片显示 IP 和时间，时间由 Air8607 本地每秒递增。
 
 ## 6. 接线后自检（3 分钟）
 

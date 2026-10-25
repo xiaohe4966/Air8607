@@ -38,10 +38,21 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+
+#if defined(__has_include)
+#if __has_include("secrets.h")
+#include "secrets.h"
+#endif
+#endif
+
+#ifndef PHOTO_TOKEN
+#define PHOTO_TOKEN ""
+#endif
 
 #define TAG "air8607-c3"
 
@@ -50,15 +61,20 @@
 #define UART_RX_GPIO    GPIO_NUM_5
 #define UART_BAUD       115200
 #define UART_RX_BUF     4096
-#define UART_TX_BUF     2048
+#define UART_TX_BUF     8192
 
 #define API_URL         "https://tool.he4966.cn/api/tool/get_my_ip"
 #define API_HOST        "tool.he4966.cn"
 #define AP_SSID         "Air8607-C3"
 #define AP_PASS         "air8607wifi"
-#define FW_VERSION      "1.0.0"
+#define FW_VERSION      "1.1.1"
 #define NVS_NAMESPACE   "air8607"
 #define STA_MAX_RETRY   5
+
+#define PHOTO_BASE      "http://img.he66.cn/api/photo"
+#define PHOTO_TIMEOUT_MS 600000
+#define PHOTO_BUF_SIZE  4096
+#define PHOTO_QUEUE_LEN 4
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
@@ -86,6 +102,17 @@ typedef struct {
     char date[24];
     char error[96];
 } fetch_result_t;
+
+#define PHOTO_CMD_RANDOM 0
+#define PHOTO_CMD_LIKED  1
+#define PHOTO_CMD_REACT  2
+
+typedef struct {
+    uint8_t kind;
+    int seq;
+    long id;
+    char action[8];
+} photo_cmd_t;
 
 static const char *PROV_HTML =
     "<!doctype html><html><head><meta charset=\"utf-8\">"
@@ -123,6 +150,11 @@ static EventGroupHandle_t s_wifi_events;
 static httpd_handle_t s_httpd;
 static int s_retry_num;
 static volatile bool s_sntp_synced;
+static QueueHandle_t s_photo_queue;
+static volatile bool s_photo_busy;
+static volatile bool s_photo_cancel;
+static volatile bool s_hello_pending;
+static volatile bool s_status_pending;
 
 static void state_snapshot(bridge_state_t *out)
 {
@@ -235,7 +267,7 @@ static void uart_send_hello(void)
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "hello");
     cJSON_AddStringToObject(root, "fw", FW_VERSION);
-    cJSON_AddNumberToObject(root, "proto", 1);
+    cJSON_AddNumberToObject(root, "proto", 2);
     uart_send_json(root);
 }
 
@@ -305,6 +337,327 @@ static void uart_send_error(const char *message)
     uart_send_json(root);
 }
 
+static bool wifi_is_ready(void)
+{
+    bridge_state_t state;
+    state_snapshot(&state);
+    return state.sta_connected && !state.ap_mode;
+}
+
+typedef struct {
+    long id;
+    int  w;
+    int  h;
+} photo_meta_t;
+
+static esp_err_t photo_http_event(esp_http_client_event_t *ev)
+{
+    if (ev->event_id != HTTP_EVENT_ON_HEADER || !ev->user_data) {
+        return ESP_OK;
+    }
+    photo_meta_t *meta = ev->user_data;
+    if (strcasecmp(ev->header_key, "X-Photo-Id") == 0) {
+        meta->id = atol(ev->header_value);
+    } else if (strcasecmp(ev->header_key, "X-Photo-Width") == 0) {
+        meta->w = atoi(ev->header_value);
+    } else if (strcasecmp(ev->header_key, "X-Photo-Height") == 0) {
+        meta->h = atoi(ev->header_value);
+    }
+    return ESP_OK;
+}
+
+static void photo_send_error(int seq, const char *err)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "photo");
+    cJSON_AddBoolToObject(root, "ok", false);
+    cJSON_AddNumberToObject(root, "seq", seq);
+    cJSON_AddStringToObject(root, "err", err ? err : "error");
+    uart_send_json(root);
+}
+
+static void photo_send_react(int seq, bool ok, long id, int state, const char *err)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "react");
+    cJSON_AddBoolToObject(root, "ok", ok);
+    cJSON_AddNumberToObject(root, "seq", seq);
+    cJSON_AddNumberToObject(root, "id", (double)id);
+    if (ok) {
+        cJSON_AddNumberToObject(root, "state", state);
+    } else {
+        cJSON_AddStringToObject(root, "err", err ? err : "react_failed");
+    }
+    uart_send_json(root);
+}
+
+static void photo_fetch(photo_cmd_t *cmd)
+{
+    if (!wifi_is_ready()) {
+        photo_send_error(cmd->seq, "wifi_not_ready");
+        return;
+    }
+    if (PHOTO_TOKEN[0] == '\0') {
+        photo_send_error(cmd->seq, "no_token");
+        return;
+    }
+
+    char url[256];
+    snprintf(url, sizeof(url), PHOTO_BASE "/%s?token=%s",
+             cmd->kind == PHOTO_CMD_LIKED ? "liked" : "random", PHOTO_TOKEN);
+
+    photo_meta_t meta = {0};
+    esp_http_client_config_t config = {
+        .url = url,
+        .timeout_ms = PHOTO_TIMEOUT_MS,
+        .buffer_size = 2048,
+        .buffer_size_tx = 512,
+        .event_handler = photo_http_event,
+        .user_data = &meta,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        photo_send_error(cmd->seq, "http_init");
+        return;
+    }
+
+    esp_http_client_set_header(client, "User-Agent", "Air8607-C3-Bridge/1.1");
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "photo open failed: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        photo_send_error(cmd->seq, "http_open");
+        return;
+    }
+
+    int content_length = esp_http_client_fetch_headers(client);
+    int status = esp_http_client_get_status_code(client);
+    ESP_LOGI(TAG, "photo %s status=%d len=%d", url, status, content_length);
+
+    if (status != 200 || content_length <= 0) {
+        char why[32];
+        if (status != 200) {
+            snprintf(why, sizeof(why), "http_status_%d", status);
+        } else {
+            snprintf(why, sizeof(why), "no_length");
+        }
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        photo_send_error(cmd->seq, why);
+        return;
+    }
+
+    if (s_photo_cancel) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        ESP_LOGI(TAG, "photo seq %d cancelled before body", cmd->seq);
+        return;
+    }
+
+    long photo_id = meta.id;
+    int photo_w = meta.w;
+    int photo_h = meta.h;
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "photo");
+    cJSON_AddBoolToObject(root, "ok", true);
+    cJSON_AddNumberToObject(root, "seq", cmd->seq);
+    cJSON_AddNumberToObject(root, "id", (double)photo_id);
+    cJSON_AddNumberToObject(root, "len", content_length);
+    cJSON_AddNumberToObject(root, "w", photo_w);
+    cJSON_AddNumberToObject(root, "h", photo_h);
+    cJSON_AddStringToObject(root, "src",
+                            cmd->kind == PHOTO_CMD_LIKED ? "liked" : "random");
+    char *text = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+
+    uint8_t *buf = malloc(PHOTO_BUF_SIZE);
+    if (!text || !buf) {
+        if (text) cJSON_free(text);
+        free(buf);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        photo_send_error(cmd->seq, "no_memory");
+        return;
+    }
+
+    /* 头部和 JPEG 必须连续发送，不能插入状态 JSON */
+    xSemaphoreTake(s_uart_tx_lock, portMAX_DELAY);
+    uart_write_bytes(UART_PORT, text, strlen(text));
+    uart_write_bytes(UART_PORT, "\n", 1);
+    cJSON_free(text);
+
+    int total = 0;
+    bool cancelled = false;
+    bool failed = false;
+    while (total < content_length) {
+        if (s_photo_cancel) {
+            cancelled = true;
+            break;
+        }
+        int read = esp_http_client_read(client, (char *)buf, PHOTO_BUF_SIZE);
+        if (read < 0) {
+            failed = true;
+            break;
+        }
+        if (read == 0) {
+            break;
+        }
+        uart_write_bytes(UART_PORT, (const char *)buf, read);
+        total += read;
+    }
+    xSemaphoreGive(s_uart_tx_lock);
+
+    free(buf);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    if (cancelled) {
+        ESP_LOGW(TAG, "photo cancelled at %d/%d", total, content_length);
+        /* 用一行 JSON 结束半截字节流，让 Air8607 能重新对齐到行模式 */
+        photo_send_error(cmd->seq, "cancelled");
+    } else if (failed || total != content_length) {
+        ESP_LOGE(TAG, "photo truncated %d/%d", total, content_length);
+    } else {
+        ESP_LOGI(TAG, "photo ok id=%ld bytes=%d", photo_id, total);
+    }
+    /* 字节流已经开始，失败时不再补 JSON；Air8607 15 秒收不到数据会自行中止 */
+}
+
+static void photo_react(photo_cmd_t *cmd)
+{
+    if (!wifi_is_ready()) {
+        photo_send_react(cmd->seq, false, cmd->id, 0, "wifi_not_ready");
+        return;
+    }
+    if (PHOTO_TOKEN[0] == '\0') {
+        photo_send_react(cmd->seq, false, cmd->id, 0, "no_token");
+        return;
+    }
+    if (strcasecmp(cmd->action, "like") != 0 &&
+        strcasecmp(cmd->action, "dislike") != 0 &&
+        strcasecmp(cmd->action, "none") != 0) {
+        photo_send_react(cmd->seq, false, cmd->id, 0, "bad_action");
+        return;
+    }
+
+    char url[256];
+    snprintf(url, sizeof(url), PHOTO_BASE "/react?token=%s", PHOTO_TOKEN);
+    char body[64];
+    snprintf(body, sizeof(body), "id=%ld&action=%s", cmd->id, cmd->action);
+
+    esp_http_client_config_t config = {
+        .url = url,
+        .timeout_ms = 30000,
+        .buffer_size = 1024,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        photo_send_react(cmd->seq, false, cmd->id, 0, "http_init");
+        return;
+    }
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+    esp_http_client_set_post_field(client, body, strlen(body));
+
+    esp_err_t err = esp_http_client_open(client, strlen(body));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "react open failed: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        photo_send_react(cmd->seq, false, cmd->id, 0, "http_open");
+        return;
+    }
+    esp_http_client_write(client, body, strlen(body));
+    esp_http_client_fetch_headers(client);
+    int status = esp_http_client_get_status_code(client);
+
+    char resp[512];
+    int n = 0;
+    while (n < (int)sizeof(resp) - 1) {
+        int read = esp_http_client_read(client, resp + n, sizeof(resp) - 1 - n);
+        if (read <= 0) break;
+        n += read;
+    }
+    resp[n] = '\0';
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    ESP_LOGI(TAG, "react id=%ld action=%s status=%d body=%s",
+             cmd->id, cmd->action, status, resp);
+
+    if (status != 200) {
+        char why[32];
+        snprintf(why, sizeof(why), "http_status_%d", status);
+        photo_send_react(cmd->seq, false, cmd->id, 0, why);
+        return;
+    }
+
+    int state = 0;
+    bool ok = false;
+    cJSON *root = cJSON_Parse(resp);
+    if (root) {
+        cJSON *code = cJSON_GetObjectItemCaseSensitive(root, "code");
+        cJSON *data = cJSON_GetObjectItemCaseSensitive(root, "data");
+        cJSON *like_state = data ? cJSON_GetObjectItemCaseSensitive(data, "like_state") : NULL;
+        if (cJSON_IsNumber(code) && code->valueint == 0) {
+            ok = true;
+        }
+        if (cJSON_IsNumber(like_state)) {
+            state = like_state->valueint;
+        }
+        cJSON_Delete(root);
+    }
+    photo_send_react(cmd->seq, ok, cmd->id, state, ok ? NULL : "json_parse");
+}
+
+static void photo_task(void *arg)
+{
+    photo_cmd_t cmd;
+    while (true) {
+        if (xQueueReceive(s_photo_queue, &cmd, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        s_photo_busy = true;
+        s_photo_cancel = false;
+        if (cmd.kind == PHOTO_CMD_REACT) {
+            photo_react(&cmd);
+        } else {
+            photo_fetch(&cmd);
+        }
+        s_photo_busy = false;
+        if (s_hello_pending) {
+            s_hello_pending = false;
+            uart_send_hello();
+        }
+        if (s_status_pending) {
+            s_status_pending = false;
+            uart_send_status();
+        }
+    }
+}
+
+static void photo_enqueue(photo_cmd_t *cmd)
+{
+    if (!s_photo_queue || xQueueSend(s_photo_queue, cmd, 0) != pdTRUE) {
+        if (cmd->kind == PHOTO_CMD_REACT) {
+            photo_send_react(cmd->seq, false, cmd->id, 0, "busy");
+        } else {
+            photo_send_error(cmd->seq, "busy");
+        }
+    }
+}
+
+/* 相册只关心最新一次请求：新请求到来时取消在传的图片并丢弃排队项 */
+static void photo_drop_pending(void)
+{
+    if (s_photo_busy) {
+        s_photo_cancel = true;
+    }
+    if (s_photo_queue) {
+        xQueueReset(s_photo_queue);
+    }
+}
+
 static void handle_uart_line(char *line)
 {
     while (*line == ' ' || *line == '\t') {
@@ -322,6 +675,19 @@ static void handle_uart_line(char *line)
     rx_lines++;
     if (rx_lines <= 3 || (rx_lines % 10) == 0) {
         ESP_LOGI(TAG, "UART RX[%lu]: %s", (unsigned long)rx_lines, line);
+    }
+
+    if (s_photo_busy) {
+        if (strncasecmp(line, "PHOTO", 5) != 0 &&
+            strncasecmp(line, "REACT", 5) != 0) {
+            /* 正在发送 JPEG，插一行 JSON 会破坏数据流；HELLO/STATUS 等发完再补 */
+            if (strcasecmp(line, "HELLO") == 0) {
+                s_hello_pending = true;
+            } else if (strcasecmp(line, "STATUS") == 0) {
+                s_status_pending = true;
+            }
+            return;
+        }
     }
 
     if (strcasecmp(line, "PING") == 0) {
@@ -347,6 +713,44 @@ static void handle_uart_line(char *line)
             cJSON_AddStringToObject(root, "mode", state.ap_mode ? "ap" : "sta");
             cJSON_AddStringToObject(root, "local_ip", state.local_ip);
             uart_send_json(root);
+        }
+    } else if (strncasecmp(line, "PHOTO", 5) == 0 &&
+               (line[5] == ' ' || line[5] == '\0')) {
+        char kind[16] = {0};
+        int pseq = 0;
+        int parsed = sscanf(line + 5, "%15s %d", kind, &pseq);
+        if (parsed >= 1 && strcasecmp(kind, "CANCEL") == 0) {
+            s_photo_cancel = true;
+        } else if (parsed >= 1) {
+            photo_cmd_t cmd = {0};
+            cmd.seq = pseq;
+            if (strcasecmp(kind, "RANDOM") == 0) {
+                cmd.kind = PHOTO_CMD_RANDOM;
+            } else if (strcasecmp(kind, "LIKED") == 0) {
+                cmd.kind = PHOTO_CMD_LIKED;
+            } else {
+                photo_send_error(pseq, "bad_kind");
+                return;
+            }
+            photo_drop_pending();
+            photo_enqueue(&cmd);
+        } else {
+            uart_send_error("bad_photo");
+        }
+    } else if (strncasecmp(line, "REACT", 5) == 0 &&
+               (line[5] == ' ' || line[5] == '\0')) {
+        int pseq = 0;
+        long pid = 0;
+        char action[8] = {0};
+        if (sscanf(line + 5, "%d %ld %7s", &pseq, &pid, action) == 3 && pid > 0) {
+            photo_cmd_t cmd = {0};
+            cmd.kind = PHOTO_CMD_REACT;
+            cmd.seq = pseq;
+            cmd.id = pid;
+            snprintf(cmd.action, sizeof(cmd.action), "%s", action);
+            photo_enqueue(&cmd);
+        } else {
+            uart_send_error("bad_react");
         }
     } else if (strcasecmp(line, "REBOOT") == 0) {
         cJSON *root = cJSON_CreateObject();
@@ -937,7 +1341,11 @@ void app_main(void)
     configASSERT(s_state_lock);
     memset(&s_state, 0, sizeof(s_state));
 
+    s_photo_queue = xQueueCreate(PHOTO_QUEUE_LEN, sizeof(photo_cmd_t));
+    configASSERT(s_photo_queue);
+
     uart_bridge_start();
+    xTaskCreate(photo_task, "photo", 8192, NULL, 4, NULL);
     ESP_ERROR_CHECK(wifi_hw_init());
 
     char ssid[33] = {0};
