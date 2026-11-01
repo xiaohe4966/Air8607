@@ -16,6 +16,10 @@ local SCREEN_SIZE = 10       -- 物理尺寸：9 或 10 英寸
 local LCD_PIN_RST = 15
 local TP_PIN_RST = 14
 local TP_PIN_INT = 51
+local SD_PIN_EN = 74         -- TF 卡供电使能
+local SD_SPI_ID = 1          -- TF 卡走 SPI1
+local SD_PIN_CS = 8
+local SD_SPI_SPEED = 20 * 1000 * 1000
 
 local function power_on()
     pwm.setup(3, 1000, 0)       -- 背光 PWM3 先关，防开机花屏
@@ -36,6 +40,38 @@ local function backlight_on()
     end
 end
 
+local function sd_init()
+    if type(fatfs) == "nil" then
+        log.warn("sd", "固件没有 fatfs 库")
+        return false
+    end
+    gpio.setup(SD_PIN_EN, 1)
+    sys.wait(50)
+    spi.setup(SD_SPI_ID, nil, 0, 0, 8, SD_SPI_SPEED)
+    gpio.setup(SD_PIN_CS, 1)
+    local ok, err = fatfs.mount(fatfs.SPI, "/sd/", SD_SPI_ID, SD_PIN_CS, SD_SPI_SPEED)
+    if not ok then
+        log.warn("sd", "mount fail", err)
+        return false
+    end
+    local good, total, used, blk, fstype = io.fsstat("/sd/")
+    log.info("sd", "fsstat", tostring(good), tostring(total), tostring(used),
+             tostring(blk), tostring(fstype))
+    local f = io.open("/sd/probe.txt", "wb")
+    if f then
+        f:write("air8607")
+        f:close()
+        local g = io.open("/sd/probe.txt", "rb")
+        local data = g and g:read(7)
+        if g then g:close() end
+        log.info("sd", "write/read", data == "air8607" and "ok" or "fail")
+        os.remove("/sd/probe.txt")
+    else
+        log.warn("sd", "write open fail")
+    end
+    return true
+end
+
 local function touch_init()
     local ok = gt911.init({
         port = 1, pin_rst = TP_PIN_RST, pin_int = TP_PIN_INT,
@@ -52,6 +88,7 @@ end
 
 sys.taskInit(function()
     power_on()
+    _G.SD_READY = sd_init()
 
     local ok, info = exd.setup({ pin_rst = LCD_PIN_RST, screen_size = SCREEN_SIZE })
     if not ok then
