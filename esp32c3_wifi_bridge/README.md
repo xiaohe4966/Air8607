@@ -22,6 +22,28 @@ Air8607 UART2 (J110 RX2/TX2)  <->  ESP32-C3 UART1 (GPIO4/GPIO5)
   product use a separate 3.3 V/5 V supply with enough peak current for WiFi.
   Do not power it from Air1603 `VDD_EXT`; that pin is for pull-ups, not a load.
 
+### ESP32-C3 SuperMini
+
+The pin names are the same; on the SuperMini board (USB-C at the top) the two
+pins are on opposite sides:
+
+| SuperMini pin | Position | Connect to |
+| --- | --- | --- |
+| `GPIO4` | left column, 4th from the top (below `3V3`) | Air8607 J110 pin 5 `RX2` |
+| `GPIO5` | right column, top pin | Air8607 J110 pin 6 `TX2` |
+| `GND` | left column, 2nd from the top | Air8607 J110 pin 3 or 7 `GND` |
+
+- Follow the silkscreen, not the counting: clone boards sometimes swap the two
+  columns.
+- Power the SuperMini from its own USB-C port.  The two on-board buttons are
+  `BOOT` (GPIO9) and `RST`.
+- The SuperMini has no auto-reset circuit, so esptool cannot always restart it
+  into download mode: hold `BOOT`, plug in USB (or press `RST`), release `BOOT`,
+  then flash.
+- The native USB port is `/dev/cu.usbmodem*` (no CH343 involved); the firmware
+  console is mirrored on USB-Serial-JTAG, so a normal `idf.py -p <port> monitor`
+  shows the boot log.
+
 ## WiFi provisioning
 
 If no credentials are stored, or the saved network cannot be joined, the
@@ -85,12 +107,12 @@ Air8607 → ESP32-C3 (one ASCII command per line):
 
 | Command | Response |
 | --- | --- |
-| `HELLO` | firmware/version hello |
+| `HELLO` | firmware/version hello (`proto` 3) |
 | `STATUS` | WiFi, local IP, fetch state |
 | `FETCH` | cached `netinfo`, or `not_ready` |
 | `PING` | `pong` |
-| `PHOTO RANDOM <seq>` | photo header, then JPEG bytes |
-| `PHOTO LIKED <seq>` | photo header, then JPEG bytes |
+| `LIST <seq> <after_id> <limit> <filter>` | `list` header, N × `item`, `list_end` |
+| `PHOTO <seq> <id>` | photo header, then JPEG bytes |
 | `PHOTO CANCEL` | cancels the photo in flight |
 | `REACT <seq> <id> <like\|dislike\|none>` | react result |
 | `REBOOT` | `ack`, then restart |
@@ -114,10 +136,11 @@ https://tool.he4966.cn/api/tool/get_my_ip
 
 `FETCH` only returns the cached result.  Reboot the ESP32-C3 to fetch again.
 
-## Photo proxy (firmware 1.1.0+)
+## Photo proxy (firmware 1.2.x)
 
-The bridge can also download photos for the Air8607 album.  The token is
-compiled in rather than sent over UART:
+The bridge can also fetch photos for the Air8607 album.  The token is compiled
+in rather than sent over UART, and it is only ever used as the `X-API-Key`
+request header — it never appears in a URL or in a log line:
 
 ```bash
 cd main
@@ -129,18 +152,42 @@ cp secrets.h.example secrets.h
 answer `{"type":"photo","ok":false,"err":"no_token"}` and the rest of the
 bridge (IP/time, provisioning) still works.
 
-Photo flow:
+### Photo index (`GET /api/photo/list`)
 
-1. Air8607 sends `PHOTO RANDOM 7` or `PHOTO LIKED 7` (`seq` is echoed back).
-2. ESP32-C3 performs `GET http://img.he66.cn/api/photo/{random,liked}?token=…`
-   with a 600 s timeout, reads `Content-Length`, and captures
-   `X-Photo-Id` / `X-Photo-Width` / `X-Photo-Height` from the response headers
-   in the `HTTP_EVENT_ON_HEADER` callback (`esp_http_client_get_header` only
-   exposes *request* headers).
+1. Air8607 sends `LIST <seq> <after_id> <limit> <filter>`.  `limit` is clamped
+   to 1…25 (the JSON body is parsed in one 32 KB buffer, so a bigger page
+   would risk the ~150 KB of internal RAM); `filter` is the API's
+   `like_state`: `1` liked, `0` unmarked, `-1` disliked, `-2` (or anything out
+   of range) = no filter.
+2. ESP32-C3 performs `GET http://img.he66.cn/api/photo/list?limit=…&after_id=…`
+   (plus `&like_state=…` unless the filter is "no filter") with a 30 s timeout
+   and forwards one line per photo, keeping each line short enough for the
+   Air8607 line reader:
+
+```json
+{"type":"list","ok":true,"seq":4,"total":229,"has_more":true,"next_after_id":15351}
+{"type":"item","seq":4,"id":15221,"key":"9f1c…","lk":1,"t":"2026-08-12 09:41:03"}
+{"type":"list_end","seq":4,"count":25}
+```
+
+`key` is the de-duplication key: the photo's `content_hash`, falling back to
+`file_id` when the server has no hash.  `count` is what the C3 actually
+forwarded, so the Air8607 notices a truncated page.  The `list` header is sent
+before the loop and the body buffer is freed before parsing, so only one JSON
+tree is alive at a time.
+
+### Photo bytes (`GET /api/photo/show`)
+
+1. Air8607 sends `PHOTO <seq> <id>` (`seq` is echoed back).
+2. ESP32-C3 performs `GET http://img.he66.cn/api/photo/show?id=…` with a 30 s
+   timeout, reads `Content-Length`, and captures `X-Photo-Id` /
+   `X-Photo-Width` / `X-Photo-Height` from the response headers in the
+   `HTTP_EVENT_ON_HEADER` callback (`esp_http_client_get_header` only exposes
+   *request* headers).
 3. It sends one JSON line, then exactly `len` raw JPEG bytes:
 
 ```json
-{"type":"photo","ok":true,"seq":7,"id":8190,"len":210348,"w":1024,"h":1365,"src":"random"}
+{"type":"photo","ok":true,"seq":7,"id":15221,"len":120533,"w":1024,"h":600}
 ```
 
 4. Errors before the byte stream starts look like
@@ -153,27 +200,31 @@ Photo flow:
 
 `PHOTO CANCEL` sets a flag checked between 4 KB chunks, and `s_uart_tx_lock`
 keeps the header + JPEG contiguous.  While a photo is streaming, other
-commands are ignored except `PHOTO …` and `REACT …`; `HELLO`/`STATUS` are
-remembered and answered immediately after the transfer, so they never inject a
-JSON line into the JPEG body.
+commands are ignored except `PHOTO …`, `LIST …` and `REACT …`; `HELLO`/`STATUS`
+are remembered and answered immediately after the transfer, so they never
+inject a JSON line into the JPEG body.
 
-Only the newest photo request matters: a new `PHOTO RANDOM/LIKED` cancels the
-transfer in flight, drops queued photo commands, and then starts the new one.
-This prevents stale frames queued in an earlier Air8607 session from being
-replayed.
+Only one photo/index request is in flight at a time: a new `PHOTO`/`LIST`
+cancels the transfer in flight and drops queued photo commands.  This prevents
+stale frames queued in an earlier Air8607 session from being replayed.
+
+The UART reader ignores bytes below `0x20` and above `0x7e`.  The Air8607
+drives the line low while it resets, which otherwise filled the 512-byte
+command buffer with `0x00` glitches and made the C3 answer `line_too_long` for
+the first real command after a reboot.
 
 Likes use `POST http://img.he66.cn/api/photo/react` with
-`id=<file_id>&action=<like|dislike|none>`:
+`id=<file_id>&action=<like|dislike|none>` in the body:
 
 ```json
-{"type":"react","ok":true,"seq":3,"id":8190,"state":1}
+{"type":"react","ok":true,"seq":3,"id":15221,"state":1}
 ```
 
 `state` is the server's `like_state`: `1` liked, `-1` disliked, `0` none.
 
 Requests run on a dedicated `photo_task` (queue length 4, 8 KB stack) so the
-UART reader never blocks on TLS.  Photo and react requests are refused with
-`wifi_not_ready` while the provisioning AP is active.
+UART reader never blocks on TLS.  Photo, index and react requests are refused
+with `wifi_not_ready` while the provisioning AP is active.
 
 ## Files
 
@@ -188,22 +239,36 @@ UART reader never blocks on TLS.  Photo and react requests are refused with
 
 ## Test status
 
-- Firmware 1.1.1 builds with ESP-IDF 5.4.4 (`idf.py build`, app 0xf6780 bytes,
-  50% of the 1.9 MB partition free).
+- Firmware 1.2.1 builds with ESP-IDF 5.4.4 (`idf.py build`, app image
+  1012160 bytes, about half of the 1.9 MB factory partition free).
 - Flashed to ESP32-C3 (QFN32 rev0.3, MAC `60:55:f9:71:d8:e0`, 4 MB MXIC flash);
   boot log confirms UART1 GPIO4/5 at 115200 8N1, WiFi connected
-  (`172.22.22.119`) and `Air8607 ESP32-C3 WiFi bridge 1.1.1`.
+  (`172.22.22.199`) and `Air8607 ESP32-C3 WiFi bridge 1.2.1`.
 - Provisioning AP `Air8607-C3` (HTTP on `192.168.4.1:80`), SNTP clock sync and
   the HTTPS public-IP request were verified on the same board.
-- End-to-end with the album (2026-10-25): the C3 downloaded 100–470 KB JPEGs
-  with the correct `X-Photo-Id`/width/height, the Air8607 wrote them to
-  `/ram/album_a.jpg` / `album_b.jpg`, decoded and displayed them, prefetched
-  the next photo and advanced after the 60 s interval.
+- End-to-end with the album (2026-11-01): `HELLO` answered
+  `hello 1.2.1 3 list=1`, `LIST 1 0 25 1` returned the `list` head
+  (`total=229`, `next_after_id`, `has_more`) plus 25 `item` lines and
+  `list_end count=25`; `PHOTO <seq> <id>` then streamed the matching JPEG
+  (74–218 KB observed) with the correct `id/len/w/h`, and the Air8607 wrote it
+  to `/sd/album/album_a.jpg`, validated and displayed it.  Paging to the tail of
+  the liked set (`after_id=29803`) returned 13 items with `has_more=false`, and
+  pages past the end return 0 items with `next_after_id` equal to the requested
+  cursor — the album uses that to stop a stalled cursor instead of re-reading the
+  same page.
+- HTTP timeouts are now 30 s for both photo and index requests (was 600 s), and
+  the transfer is checked for `PHOTO CANCEL` between chunks, so a stuck server no
+  longer blocks `HELLO`/`STATUS` keepalive.
+- The UART reader only accepts printable ASCII (0x20–0x7E).  Without this, the
+  Air8607's RTS reset pulse drags the C3 RX line low and the firmware collected
+  hundreds of `0x00` into the command buffer and answered `line_too_long`, which
+  cost the album its first index page.
 - `REACT` parsed `{"code":0,"data":{"like_state":…}}` and returned
   `{"type":"react","ok":true,...}` (verified against the live API in an earlier
   session; the like state was restored afterwards).
 - Response headers are captured via the event callback; request-header lookup
   (`esp_http_client_get_header`) returns `id=0`, which broke likes before 1.1.1.
-- Photo sizes like 1024×1365 are not 16-aligned; AirUI logs
-  `skip HW, risky jpeg … not 16-aligned` and decodes them in software.  Images
-  whose width/height are multiples of 16 use the hardware decoder.
+- Photos served to the device are 1024×600; the height is not a multiple of 16,
+  so AirUI logs `skip HW, risky jpeg … not 16-aligned` and decodes them in
+  software.  Images whose width/height are multiples of 16 use the hardware
+  decoder.

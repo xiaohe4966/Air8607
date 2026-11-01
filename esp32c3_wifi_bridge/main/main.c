@@ -7,6 +7,12 @@
  *
  *     https://tool.he4966.cn/api/tool/get_my_ip
  *
+ * Photo commands proxy img.he66.cn:  LIST <seq> <after_id> <limit> <filter>
+ * pages through /api/photo/list (one JSON line per item), PHOTO <seq> <id>
+ * streams /api/photo/show?id=<id> as raw JPEG bytes, REACT marks a photo.
+ * The API token lives only in secrets.h and is sent as the X-API-Key header,
+ * so it never appears in a URL or in a log line.
+ *
  * Wiring (ESP32-C3 -> Air8607 J110):
  *     GPIO4  UART1_TX -> J110 pin 5  RX2
  *     GPIO5  UART1_RX <- J110 pin 6  TX2
@@ -29,6 +35,7 @@
 #include "driver/uart.h"
 #include "esp_crt_bundle.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -67,14 +74,19 @@
 #define API_HOST        "tool.he4966.cn"
 #define AP_SSID         "Air8607-C3"
 #define AP_PASS         "air8607wifi"
-#define FW_VERSION      "1.1.1"
+#define FW_VERSION      "1.2.1"
 #define NVS_NAMESPACE   "air8607"
 #define STA_MAX_RETRY   5
 
 #define PHOTO_BASE      "http://img.he66.cn/api/photo"
-#define PHOTO_TIMEOUT_MS 600000
+#define PHOTO_TIMEOUT_MS 30000
 #define PHOTO_BUF_SIZE  4096
 #define PHOTO_QUEUE_LEN 4
+
+#define LIST_TIMEOUT_MS   30000
+#define LIST_DEFAULT_LIMIT 20
+#define LIST_MAX_LIMIT    25
+#define LIST_BODY_MAX     (32 * 1024)
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
@@ -103,14 +115,20 @@ typedef struct {
     char error[96];
 } fetch_result_t;
 
-#define PHOTO_CMD_RANDOM 0
-#define PHOTO_CMD_LIKED  1
-#define PHOTO_CMD_REACT  2
+#define PHOTO_CMD_FETCH 0
+#define PHOTO_CMD_LIST  1
+#define PHOTO_CMD_REACT 2
+
+/* LIST 的 like_state 取值：1 喜欢 / 0 未标记 / -1 不喜欢 / -2 不过滤 */
+#define FILTER_ANY (-2)
 
 typedef struct {
     uint8_t kind;
     int seq;
     long id;
+    long after_id;
+    uint8_t limit;
+    int8_t filter;
     char action[8];
 } photo_cmd_t;
 
@@ -267,7 +285,7 @@ static void uart_send_hello(void)
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "hello");
     cJSON_AddStringToObject(root, "fw", FW_VERSION);
-    cJSON_AddNumberToObject(root, "proto", 2);
+    cJSON_AddNumberToObject(root, "proto", 3);
     uart_send_json(root);
 }
 
@@ -401,10 +419,14 @@ static void photo_fetch(photo_cmd_t *cmd)
         photo_send_error(cmd->seq, "no_token");
         return;
     }
+    if (cmd->id <= 0) {
+        photo_send_error(cmd->seq, "bad_id");
+        return;
+    }
 
-    char url[256];
-    snprintf(url, sizeof(url), PHOTO_BASE "/%s?token=%s",
-             cmd->kind == PHOTO_CMD_LIKED ? "liked" : "random", PHOTO_TOKEN);
+    /* 只用 id 自己拼 URL：接口给的 image_url 不入库，token 也永远不进 URL */
+    char url[128];
+    snprintf(url, sizeof(url), PHOTO_BASE "/show?id=%ld", cmd->id);
 
     photo_meta_t meta = {0};
     esp_http_client_config_t config = {
@@ -421,7 +443,8 @@ static void photo_fetch(photo_cmd_t *cmd)
         return;
     }
 
-    esp_http_client_set_header(client, "User-Agent", "Air8607-C3-Bridge/1.1");
+    esp_http_client_set_header(client, "User-Agent", "Air8607-C3-Bridge/1.2");
+    esp_http_client_set_header(client, "X-API-Key", PHOTO_TOKEN);
     esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "photo open failed: %s", esp_err_to_name(err));
@@ -466,8 +489,6 @@ static void photo_fetch(photo_cmd_t *cmd)
     cJSON_AddNumberToObject(root, "len", content_length);
     cJSON_AddNumberToObject(root, "w", photo_w);
     cJSON_AddNumberToObject(root, "h", photo_h);
-    cJSON_AddStringToObject(root, "src",
-                            cmd->kind == PHOTO_CMD_LIKED ? "liked" : "random");
     char *text = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
 
@@ -524,6 +545,200 @@ static void photo_fetch(photo_cmd_t *cmd)
     /* 字节流已经开始，失败时不再补 JSON；Air8607 15 秒收不到数据会自行中止 */
 }
 
+static void photo_send_list_error(int seq, const char *err)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "list");
+    cJSON_AddBoolToObject(root, "ok", false);
+    cJSON_AddNumberToObject(root, "seq", seq);
+    cJSON_AddStringToObject(root, "err", err ? err : "error");
+    uart_send_json(root);
+}
+
+/* 一条 item 一行，Air8607 的行缓冲有限，不能整包 JSON 甩过去 */
+static void list_send_item(int seq, const cJSON *item)
+{
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(item, "id");
+    if (!cJSON_IsNumber(id)) {
+        return;
+    }
+    const cJSON *hash = cJSON_GetObjectItemCaseSensitive(item, "content_hash");
+    const cJSON *fid = cJSON_GetObjectItemCaseSensitive(item, "file_id");
+    const cJSON *like = cJSON_GetObjectItemCaseSensitive(item, "like_state");
+    const cJSON *joined = cJSON_GetObjectItemCaseSensitive(item, "joined_at");
+
+    /* 去重键：优先 content_hash，没有就用 file_id */
+    char key[64] = {0};
+    if (cJSON_IsString(hash) && hash->valuestring && hash->valuestring[0]) {
+        snprintf(key, sizeof(key), "%s", hash->valuestring);
+    } else if (cJSON_IsString(fid) && fid->valuestring) {
+        snprintf(key, sizeof(key), "%s", fid->valuestring);
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "item");
+    cJSON_AddNumberToObject(root, "seq", seq);
+    cJSON_AddNumberToObject(root, "id", id->valuedouble);
+    cJSON_AddStringToObject(root, "key", key);
+    cJSON_AddNumberToObject(root, "lk", cJSON_IsNumber(like) ? like->valueint : 0);
+    if (cJSON_IsString(joined) && joined->valuestring) {
+        char stamp[24] = {0};
+        snprintf(stamp, sizeof(stamp), "%.19s", joined->valuestring);
+        cJSON_AddStringToObject(root, "t", stamp);
+    }
+    uart_send_json(root);
+}
+
+static void photo_list(photo_cmd_t *cmd)
+{
+    if (!wifi_is_ready()) {
+        photo_send_list_error(cmd->seq, "wifi_not_ready");
+        return;
+    }
+    if (PHOTO_TOKEN[0] == '\0') {
+        photo_send_list_error(cmd->seq, "no_token");
+        return;
+    }
+
+    uint8_t limit = cmd->limit == 0 ? LIST_DEFAULT_LIMIT : cmd->limit;
+    if (limit > LIST_MAX_LIMIT) {
+        limit = LIST_MAX_LIMIT;
+    }
+
+    char url[128];
+    if (cmd->filter == FILTER_ANY) {
+        snprintf(url, sizeof(url), PHOTO_BASE "/list?limit=%u&after_id=%ld",
+                 limit, cmd->after_id);
+    } else {
+        snprintf(url, sizeof(url), PHOTO_BASE "/list?limit=%u&after_id=%ld&like_state=%d",
+                 limit, cmd->after_id, (int)cmd->filter);
+    }
+
+    esp_http_client_config_t config = {
+        .url = url,
+        .timeout_ms = LIST_TIMEOUT_MS,
+        .buffer_size = 2048,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        photo_send_list_error(cmd->seq, "http_init");
+        return;
+    }
+    esp_http_client_set_header(client, "User-Agent", "Air8607-C3-Bridge/1.2");
+    esp_http_client_set_header(client, "X-API-Key", PHOTO_TOKEN);
+
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "list open failed: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        photo_send_list_error(cmd->seq, "http_open");
+        return;
+    }
+    int expect = esp_http_client_fetch_headers(client);
+    int status = esp_http_client_get_status_code(client);
+    ESP_LOGI(TAG, "list %s status=%d len=%d", url, status, expect);
+    if (status != 200) {
+        char why[32];
+        snprintf(why, sizeof(why), "http_status_%d", status);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        photo_send_list_error(cmd->seq, why);
+        return;
+    }
+
+    char *body = malloc(LIST_BODY_MAX);
+    if (!body) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        photo_send_list_error(cmd->seq, "no_memory");
+        return;
+    }
+
+    int got = 0;
+    bool read_failed = false;
+    while (got < LIST_BODY_MAX - 1) {
+        int read = esp_http_client_read(client, body + got, LIST_BODY_MAX - 1 - got);
+        if (read < 0) {
+            read_failed = true;
+            break;
+        }
+        if (read == 0) {
+            break;
+        }
+        got += read;
+        if (expect > 0 && got >= expect) {
+            break;
+        }
+    }
+    body[got] = '\0';
+    /* 先释放 http 客户端，再解析，峰值内存少一份 socket 缓冲 */
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    if (read_failed || (expect > 0 && got != expect)) {
+        ESP_LOGE(TAG, "list truncated %d/%d", got, expect);
+        free(body);
+        photo_send_list_error(cmd->seq, "body_truncated");
+        return;
+    }
+    if (got >= LIST_BODY_MAX - 1) {
+        free(body);
+        photo_send_list_error(cmd->seq, "list_too_big");
+        return;
+    }
+
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (!root) {
+        photo_send_list_error(cmd->seq, "json_parse");
+        return;
+    }
+
+    const cJSON *code = cJSON_GetObjectItemCaseSensitive(root, "code");
+    const cJSON *data = cJSON_GetObjectItemCaseSensitive(root, "data");
+    const cJSON *items = data ? cJSON_GetObjectItemCaseSensitive(data, "items") : NULL;
+    if (!cJSON_IsNumber(code) || code->valueint != 0 || !cJSON_IsArray(items)) {
+        ESP_LOGE(TAG, "list api error code=%d", cJSON_IsNumber(code) ? code->valueint : -1);
+        cJSON_Delete(root);
+        photo_send_list_error(cmd->seq, "api_error");
+        return;
+    }
+
+    const cJSON *total = cJSON_GetObjectItemCaseSensitive(data, "total");
+    const cJSON *has_more = cJSON_GetObjectItemCaseSensitive(data, "has_more");
+    const cJSON *next_id = cJSON_GetObjectItemCaseSensitive(data, "next_after_id");
+
+    cJSON *head = cJSON_CreateObject();
+    cJSON_AddStringToObject(head, "type", "list");
+    cJSON_AddBoolToObject(head, "ok", true);
+    cJSON_AddNumberToObject(head, "seq", cmd->seq);
+    cJSON_AddNumberToObject(head, "total", cJSON_IsNumber(total) ? total->valuedouble : 0);
+    cJSON_AddBoolToObject(head, "has_more", cJSON_IsTrue(has_more));
+    cJSON_AddNumberToObject(head, "next_after_id",
+                            cJSON_IsNumber(next_id) ? next_id->valuedouble : 0);
+    uart_send_json(head);
+
+    int count = 0;
+    const cJSON *item = NULL;
+    cJSON_ArrayForEach(item, items) {
+        if (s_photo_cancel) {
+            break;
+        }
+        list_send_item(cmd->seq, item);
+        count++;
+    }
+
+    cJSON *tail = cJSON_CreateObject();
+    cJSON_AddStringToObject(tail, "type", "list_end");
+    cJSON_AddNumberToObject(tail, "seq", cmd->seq);
+    cJSON_AddNumberToObject(tail, "count", count);
+    uart_send_json(tail);
+
+    cJSON_Delete(root);
+    ESP_LOGI(TAG, "list seq=%d items=%d free_heap=%u", cmd->seq, count,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+}
+
 static void photo_react(photo_cmd_t *cmd)
 {
     if (!wifi_is_ready()) {
@@ -541,8 +756,8 @@ static void photo_react(photo_cmd_t *cmd)
         return;
     }
 
-    char url[256];
-    snprintf(url, sizeof(url), PHOTO_BASE "/react?token=%s", PHOTO_TOKEN);
+    char url[128];
+    snprintf(url, sizeof(url), PHOTO_BASE "/react");
     char body[64];
     snprintf(body, sizeof(body), "id=%ld&action=%s", cmd->id, cmd->action);
 
@@ -558,6 +773,7 @@ static void photo_react(photo_cmd_t *cmd)
     }
     esp_http_client_set_method(client, HTTP_METHOD_POST);
     esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+    esp_http_client_set_header(client, "X-API-Key", PHOTO_TOKEN);
     esp_http_client_set_post_field(client, body, strlen(body));
 
     esp_err_t err = esp_http_client_open(client, strlen(body));
@@ -621,6 +837,8 @@ static void photo_task(void *arg)
         s_photo_cancel = false;
         if (cmd.kind == PHOTO_CMD_REACT) {
             photo_react(&cmd);
+        } else if (cmd.kind == PHOTO_CMD_LIST) {
+            photo_list(&cmd);
         } else {
             photo_fetch(&cmd);
         }
@@ -641,6 +859,8 @@ static void photo_enqueue(photo_cmd_t *cmd)
     if (!s_photo_queue || xQueueSend(s_photo_queue, cmd, 0) != pdTRUE) {
         if (cmd->kind == PHOTO_CMD_REACT) {
             photo_send_react(cmd->seq, false, cmd->id, 0, "busy");
+        } else if (cmd->kind == PHOTO_CMD_LIST) {
+            photo_send_list_error(cmd->seq, "busy");
         } else {
             photo_send_error(cmd->seq, "busy");
         }
@@ -679,7 +899,8 @@ static void handle_uart_line(char *line)
 
     if (s_photo_busy) {
         if (strncasecmp(line, "PHOTO", 5) != 0 &&
-            strncasecmp(line, "REACT", 5) != 0) {
+            strncasecmp(line, "REACT", 5) != 0 &&
+            strncasecmp(line, "LIST", 4) != 0) {
             /* 正在发送 JPEG，插一行 JSON 会破坏数据流；HELLO/STATUS 等发完再补 */
             if (strcasecmp(line, "HELLO") == 0) {
                 s_hello_pending = true;
@@ -714,28 +935,47 @@ static void handle_uart_line(char *line)
             cJSON_AddStringToObject(root, "local_ip", state.local_ip);
             uart_send_json(root);
         }
-    } else if (strncasecmp(line, "PHOTO", 5) == 0 &&
-               (line[5] == ' ' || line[5] == '\0')) {
-        char kind[16] = {0};
+    } else if (strncasecmp(line, "PHOTO", 5) == 0 && line[5] == ' ') {
+        char first[16] = {0};
         int pseq = 0;
-        int parsed = sscanf(line + 5, "%15s %d", kind, &pseq);
-        if (parsed >= 1 && strcasecmp(kind, "CANCEL") == 0) {
+        long pid = 0;
+        if (sscanf(line + 5, "%15s", first) == 1 && strcasecmp(first, "CANCEL") == 0) {
             s_photo_cancel = true;
-        } else if (parsed >= 1) {
+        } else if (sscanf(line + 5, "%d %ld", &pseq, &pid) == 2 && pid > 0) {
             photo_cmd_t cmd = {0};
+            cmd.kind = PHOTO_CMD_FETCH;
             cmd.seq = pseq;
-            if (strcasecmp(kind, "RANDOM") == 0) {
-                cmd.kind = PHOTO_CMD_RANDOM;
-            } else if (strcasecmp(kind, "LIKED") == 0) {
-                cmd.kind = PHOTO_CMD_LIKED;
-            } else {
-                photo_send_error(pseq, "bad_kind");
-                return;
-            }
+            cmd.id = pid;
             photo_drop_pending();
             photo_enqueue(&cmd);
         } else {
             uart_send_error("bad_photo");
+        }
+    } else if (strncasecmp(line, "LIST", 4) == 0 && line[4] == ' ') {
+        int pseq = 0;
+        long after = 0;
+        int limit = 0;
+        int filter = FILTER_ANY;
+        if (sscanf(line + 4, "%d %ld %d %d", &pseq, &after, &limit, &filter) >= 2 &&
+            pseq > 0) {
+            photo_cmd_t cmd = {0};
+            cmd.kind = PHOTO_CMD_LIST;
+            cmd.seq = pseq;
+            cmd.after_id = after < 0 ? 0 : after;
+            if (limit <= 0) {
+                limit = LIST_DEFAULT_LIMIT;
+            } else if (limit > LIST_MAX_LIMIT) {
+                limit = LIST_MAX_LIMIT;
+            }
+            cmd.limit = (uint8_t)limit;
+            if (filter < FILTER_ANY || filter > 1) {
+                filter = FILTER_ANY;
+            }
+            cmd.filter = (int8_t)filter;
+            photo_drop_pending();
+            photo_enqueue(&cmd);
+        } else {
+            uart_send_error("bad_list");
         }
     } else if (strncasecmp(line, "REACT", 5) == 0 &&
                (line[5] == ' ' || line[5] == '\0')) {
@@ -779,7 +1019,8 @@ static void uart_bridge_task(void *arg)
                 line[line_len] = '\0';
                 handle_uart_line(line);
                 line_len = 0;
-            } else if (ch != '\r') {
+            } else if (ch >= ' ' && ch < 127) {
+                /* 其余字节（对端复位的毛刺、0x00、乱码）直接丢，别把命令缓冲灌脏 */
                 if (line_len < sizeof(line) - 1) {
                     line[line_len++] = ch;
                 } else {
