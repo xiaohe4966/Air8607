@@ -17,8 +17,9 @@ local BL_PWM_CH = 3
 local BRIGHT_MIN, BRIGHT_MAX = 10, 100
 local INTERVAL_MIN, INTERVAL_MAX, INTERVAL_DEFAULT = 10, 300, 300
 -- 整屏解码要 ~1.8 MB 连续内存，固件连着解几张之后就用不出来了（照片区域会黑）。
--- 显示满这么多张就重启一次设备，把解码内存清干净。
-local REBOOT_AFTER = 3
+-- 打了 patches/patch_soc.py 的补丁（图片缓存上限调到 1 MB）后这个问题就没有了，
+-- 所以默认不再重启设备；把 REBOOT_AFTER 设成 >0 可以退回「定期重启清内存」的旧办法。
+local REBOOT_AFTER = 0
 local PAGE_RETRY_MS = 15000
 local SYNC_IDLE_MS = 300000
 local SYNC_MAX_PAGES = 12
@@ -580,8 +581,8 @@ end
 -- 整屏解码的内存用完之前重启一次设备：固件没法回收整屏解码的连续内存，
 -- 重启是最干脆的清法（照片库在卡上，重启不丢，接着上次的位置继续）
 local function reboot_soon()
-    if HAVE_CACHE_DROP then
-        return   -- 能清缓存就不用重启整机了
+    if HAVE_CACHE_DROP or REBOOT_AFTER <= 0 then
+        return   -- 能清缓存、或已关掉这个兜底，就不用重启整机了
     end
     ui.decoded = ui.decoded + 1
     if ui.decoded < REBOOT_AFTER then return end
@@ -637,7 +638,8 @@ local function show_photo(meta, keep_history)
 end
 
 -- 换下一张：本地相册里往后走一张
-local function do_switch()
+local function do_switch(tag)
+    log.info("album", "切换", tag or "自动", ui.interval)
     local e = next_local()
     if e then
         show_photo(e)
@@ -1031,6 +1033,7 @@ function M.toggle_panel()
 end
 
 function M.next()
+    log.info("album", "按下一张")
     if ui.unsupported then
         flash("C3 固件 " .. tostring(client.firmware() or "-") .. " 不支持分页，请升级到 1.2 以上")
         return
@@ -1039,6 +1042,7 @@ function M.next()
 end
 
 function M.prev()
+    log.info("album", "按上一张")
     if #ui.history < 2 then
         flash("已经是第一张了")
         return

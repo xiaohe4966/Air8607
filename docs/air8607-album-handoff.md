@@ -233,7 +233,29 @@ J110 全部针脚：`1 RX1`、`2 TX1`、`3 GND`、`4 VBAT`、`5 RX2`、`6 TX2`�
   代价只有每 3 张那次约 10 秒的重启黑屏。
   想调就把 `ui_album.lua` 里的 `REBOOT_AFTER`（当前 3）和 `INTERVAL_DEFAULT`（当前 300）改掉。
 
-### 6.2a 根因在固件源码里（AirUI 是开源的）
+### 6.2a 根因（已定位并用补丁解决）
+
+**AirUI 的图片缓存上限（3 MB）比 LVGL 的堆（约 1.5 MB）还大。**
+每张 1024×600 的照片解码成 RGB565 要 1.17 MB 常驻缓存，解码瞬间还要一块 ~1.84 MB 的连续内存，
+两块都从同一个池子里出 → 攒到第 3、4 张就分不出来 → `decode fail: hzjpeg alloc fail … 连续内存不足`
+→ 照片区域黑到下次换图。（PSRAM 空闲总量全程稳定 5.47 MB，不是泄漏。）
+
+**解法**：`patches/patch_soc.py` 给 `.soc` 打个补丁，把 `lv_init` 里那条
+`mov.w r0, #0x300000`（图片缓存上限）改成 1 MB —— 1 MB 装不下 1.17 MB 的解码结果，缓存等于不缓存，
+解码结果直接从通用堆分配 → 每次换图都解得出来。**只改 1 个字节**，实测 60 秒/张连跑 8 分钟：
+**8 次换图、0 次 decode fail、0 次重启**。
+
+`.soc` 是个 7-zip 包，解开有 `luatos.bin`（可烧镜像）、`luatos.elf`（带符号）、`luatos.map`（链接映射），
+所以**不用厂商 SDK 也能精确定位并改二进制**（`.soc` 里的 `info.json` 给了各分区地址：
+app 在 0x14000000、脚本区 0x14480000、NVM 0x101f0000）。
+
+**另一条路别走**：芯片（Air1101）确实带 JPG/PNG 硬解码，AirUI 也接了，只把「尺寸不是 16 的倍数」
+判成 risky（1024×600 的 600 不是 16 的倍数）→ 退回软解。源码有开关
+`LUAT_USE_AIRUI_JPG_HW_ANY_SIZE`（`components/airui/inc/luat_airui_conf.h`），也能直接改二进制里
+那条 `beq` 分支——**但实测放开后 UI 卡住约 36 秒并冒出幽灵点击**（相册自己刷下一张、连成重启循环）。
+AirUI 那条兜底规则就是为「某些平台硬解处理非 16 对齐会崩」准备的，不要绕过。
+
+### 6.2b 根因在固件源码里（AirUI 是开源的）
 
 `https://gitee.com/openLuat/LuatOS` 主仓库里 **`components/airui/` 就是 AirUI 的全部源码**
 （自带 LVGL9 内核、hzjpeg 解码器、图片缓存），另有 `components/lvgl`、`components/hzfont`。
