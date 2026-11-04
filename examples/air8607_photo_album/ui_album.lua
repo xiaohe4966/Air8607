@@ -27,15 +27,16 @@ local DEMO = "/luadb/demo.jpg"
 local DIR_SD = "/sd/album"
 local DIR_RAM = "/ram"
 local store_dir = DIR_RAM
-local VIEW_PATHS = {}
-local VIEW_CUR = 1
-local last_write = {}
-
--- 打了 patches/airui-image-cache-lua.patch 的新固件能主动删图片缓存条目，
--- 那就不用轮换显示路径、不用等 2 秒桶、也不用重启整机了；
--- 老固件（缓存按路径记、且从 Lua 侧作废不了）走下面那套绕法。
+-- 打了 patches/airui-image-cache-lua.patch 的新固件能主动删图片缓存条目：
+-- 换图前把旧路径删掉，池子里就永远只有一份 → 不黑屏，也不用重启整机。
+-- 老固件删不掉（缓存按路径记、且从 Lua 侧作废不了），条目会越攒越多把池子占满，
+-- 只能靠「每 N 张重启一次」清掉。
 local HAVE_CACHE_DROP = type(airui.cache_drop) == "function"
 log.info("album", "图片缓存可控", HAVE_CACHE_DROP and 1 or 0)
+do
+    local ok, ver = pcall(function() return airui.version and airui.version() end)
+    log.info("album", "AirUI 版本", ok and tostring(ver) or "?")
+end
 
 local C = {
     bg = 0x000000,
@@ -77,7 +78,7 @@ local ui = {
     root = nil,
     layer = nil,
     img = nil,
-    img_back = nil,
+    img_path = nil,
     top = nil,
     bottom = nil,
     panel = nil,
@@ -116,7 +117,6 @@ local ui = {
     stopped_full = false,
     msg_until = 0,
     waiting = false,
-    show_pending = false,
     decoded = 0,
     deadline = 0,
     paused_remain = 0,
@@ -221,78 +221,20 @@ local function valid_jpeg(path)
     return ok and good == true
 end
 
--- 显示用的两条路径轮换着写，照片从本地库**就地覆盖**过去。
--- 为什么这么绕：
--- 1) AirUI 的图片缓存是按「路径」记解码后的像素。同一张照片一直用同一个路径，
---    缓存就不会重新读文件，屏幕会一直停在那一张；每张照片各用一个路径又会让
---    缓存越攒越多（4 张左右就再也分配不出整屏解码要的 ~1.8 MB 连续内存，之后全黑）。
---    两条路径轮换，缓存里最多留两份，内存够，路径上的内容也一直在变。
--- 2) 必须就地写：先写临时文件再改名的话，目标文件的修改时间不会更新。
--- 3) FAT 的修改时间只有 2 秒精度（秒数存的是 >>1）。两次写落在同一个 2 秒桶里，
---    缓存同样认不出来，所以同一条路径的两次写入要隔开 2 秒。
-local function next_view_path()
-    if HAVE_CACHE_DROP then
-        -- 能主动清缓存就只用一条路径：缓存里永远只有一份，内存够
-        return VIEW_PATHS[1]
-    end
-    VIEW_CUR = 3 - VIEW_CUR
-    return VIEW_PATHS[VIEW_CUR]
-end
-
-local function stage_delay(path)
-    if HAVE_CACHE_DROP then
-        return 0   -- 缓存能主动清掉，写入间隔不用管 2 秒桶
-    end
-    local lw = last_write[path]
-    if not lw then return 0 end
-    local t = os.time()
-    local earliest = math.floor(lw / 2) * 2 + 2
-    if t >= earliest then return 0 end
-    return (earliest - t) * 1000
-end
-
-local function stage_view(src, path)
-    local fi = io.open(src, "rb")
-    if not fi then return false end
-    local fo = io.open(path, "wb")
-    if not fo then
-        pcall(function() fi:close() end)
-        return false
-    end
-    local ok = true
-    pcall(function()
-        while true do
-            local chunk = fi:read(16384)
-            if not chunk or #chunk == 0 then break end
-            if not fo:write(chunk) then ok = false break end
-        end
-    end)
-    pcall(function() fo:close() end)
-    pcall(function() fi:close() end)
-    if not ok or not valid_jpeg(path) then
-        log.warn("album", "复制到显示路径失败", src)
-        return false
-    end
-    last_write[path] = os.time()
-    return true
-end
-
-local function render_image(meta, path, staged)
+local function render_image(meta)
     local demo = meta.demo == true
-    if not demo and not staged then
-        -- 先把新照片写进这条路径（另一条路径上的那张还在屏上，不会黑）
-        if not stage_view(meta.path, path) then return false end
-    end
+    local path = meta.path
+    local old_path = ui.img_path
     -- 旧图先删：AirUI 的图片缓存/图池是有限的，整屏解码要 ~1.8 MB 连续内存，
     -- 同时留着两张解码结果就分不出来了（实测第 5 次换图起就开始 decode fail）。
     destroy_image(ui.img)
-    if ui.img_back then destroy_image(ui.img_back) end
-    ui.img_back = nil
-    if HAVE_CACHE_DROP and path then
-        -- 旧控件已经删了（它还指着缓存里的条目），现在把这条路径的缓存条目也删掉：
+    ui.img = nil
+    if HAVE_CACHE_DROP and old_path then
+        -- 旧控件已经删了（它还指着缓存里的条目），现在把旧路径的缓存条目也删掉：
         -- 池子里腾出位置，这次解码一定分配得到 1.8 MB 连续内存
-        pcall(airui.cache_drop, path)
+        pcall(airui.cache_drop, old_path)
     end
+    ui.img_path = path
     ui.img = airui.image({
         parent = ui.layer,
         x = 0, y = 0, w = SCREEN_W, h = SCREEN_H,
@@ -652,10 +594,8 @@ local function reboot_soon()
     end, 8000)
 end
 
-local pending_show = nil
-
-local function show_at(meta, keep_history, path)
-    if not render_image(meta, path) then
+local function show_at(meta, keep_history)
+    if not render_image(meta) then
         flash("这张显示不出来，先换下一张")
         return false
     end
@@ -693,30 +633,11 @@ end
 
 
 local function show_photo(meta, keep_history)
-    if meta.demo then
-        return show_at(meta, keep_history, nil)
-    end
-    local path = next_view_path()
-    local delay = stage_delay(path)
-    if delay > 0 then
-        -- 同一条路径离上次写入不到 2 秒，修改时间可能落在同一个桶里，
-        -- 缓存认不出文件变了。等一下再换，屏幕上就一定会更新。
-        pending_show = { meta = meta, history = keep_history, path = path }
-        ui.show_pending = true
-        sys.timerStart(function()
-            local p = pending_show
-            pending_show = nil
-            ui.show_pending = false
-            if p then show_at(p.meta, p.history, p.path) end
-        end, delay + 60)
-        return false
-    end
-    return show_at(meta, keep_history, path)
+    return show_at(meta, keep_history)
 end
 
 -- 换下一张：本地相册里往后走一张
 local function do_switch()
-    if ui.show_pending then return end
     local e = next_local()
     if e then
         show_photo(e)
@@ -900,7 +821,7 @@ local function rotate()
     ui.rotation = (ui.rotation + 90) % 360
     set_text(M.w.rot, "旋转 " .. ui.rotation)
     if ui.current and not ui.current.demo then
-        render_image(ui.current, VIEW_PATHS[VIEW_CUR], true)
+        render_image(ui.current)
     end
 end
 
@@ -1199,8 +1120,6 @@ function M.build(parent)
     math.randomseed(os.time())
 
     store_dir = mount_store()
-    VIEW_PATHS[1] = store_dir .. "/view_a.jpg"
-    VIEW_PATHS[2] = store_dir .. "/view_b.jpg"
     -- RAM 太小只留最近两张；TF 卡按用户要求不自动删，满了就停下不下载
     if store_dir == DIR_SD then
         ui.store_max = nil
@@ -1214,6 +1133,10 @@ function M.build(parent)
         border_width = 0, scrollable = false,
     })
 
+    -- 早期版本用过两条固定显示路径，现在直接用库里的照片文件当显示源，清掉遗留文件
+    pcall(os.remove, store_dir .. "/view_a.jpg")
+    pcall(os.remove, store_dir .. "/view_b.jpg")
+    pcall(os.remove, store_dir .. "/view.tmp")
     log.info("album", "可用空间", free_bytes())
     load_library()
     load_state()
