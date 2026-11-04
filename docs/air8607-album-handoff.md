@@ -229,6 +229,19 @@ J110 全部针脚：`1 RX1`、`2 TX1`、`3 GND`、`4 VBAT`、`5 RX2`、`6 TX2`�
   默认间隔改成 5 分钟 → 约 15 分钟重启一次。重启后照片库和游标都在卡上，直接接着播。
   想调就把 `ui_album.lua` 里的 `REBOOT_AFTER`（当前 3）和 `INTERVAL_DEFAULT`（当前 300）改掉。
 
+### 6.2b 试过并且走不通的路：重置 AirUI 引擎
+
+想用 `airui.deinit()` + `airui.init()` 把固件不回收的解码内存就地还回去（比重启整机轻得多），
+2026-11-01 实测**有两个硬伤，不要再走这条**：
+
+1. **GT911 不允许二次初始化**：重置后再调 `tp_gt911.init()` 会报
+   `E/tp tp has been initialized!!! / 初始化失败` → **第一次重置后触摸就废了**。
+2. **固件自己会崩**：连续重置 5 次后 assert 死机
+   （`heap is already free can not free again / assert!!! / 断言死机`）→ AirUI 的
+   deinit/init 有重复释放的 bug。
+
+结论：能清内存的只有**整机重启**（`rtos.reboot()`），所以现在是每 3 张照片重启一次。
+
 ### 6.3 FAT 的修改时间只有 2 秒精度
 
 - FAT 的秒字段存的是 `>>1`，所以同一路径的两次写入如果落在同一个 2 秒桶里，
@@ -256,6 +269,9 @@ J110 全部针脚：`1 RX1`、`2 TX1`、`3 GND`、`4 VBAT`、`5 RX2`、`6 TX2`�
 - **C3 在传大图时可能触发 task_wdt**（`IDLE` 没跑到），实测不影响功能，会自己恢复。
 - **pyserial 打开 C3 的串口会把芯片复位**（USB-UART-JTAG 等价于 `USB_UART_CHIP_RESET`），
   看 C3 日志前先把 DTR/RTS 置 False（monkey-patch `serial.serialposix.Serial.open`）。
+- **C3 换了板或清过 NVS 就没有 WiFi 凭据**：状态变成 `ap wifi=0 wifi_config_required`，
+  Air 侧会一直报「索引失败 wifi_not_ready」（本地播放不受影响）。
+  重新配网：手机连 `Air8607-C3` / `air8607wifi`，开 http://192.168.4.1/ 填 2.4 GHz WiFi。
 - **Air 的二进制日志是攒够才刷的**：设备安静 ≠ 卡死；判断是否在跑看 C3 侧有没有每 10 秒一次的
   `STATUS`，或在 `tick` 里临时加心跳日志。
 
