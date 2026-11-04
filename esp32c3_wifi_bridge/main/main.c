@@ -1606,5 +1606,9 @@ void app_main(void)
     } else {
         ESP_LOGE(TAG, "WiFi connect failed; starting provisioning AP");
         start_provisioning();
+        // 失败原因带上 SSID，Air 那边直接显示在屏幕上，不用看这里的日志
+        char msg[96];
+        snprintf(msg, sizeof(msg), "wifi_connect_failed:%s", ssid);
+        state_set_error(msg);
     }
 }

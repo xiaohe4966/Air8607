@@ -670,6 +670,10 @@ local function on_event(ev, a, b)
     elseif ev == "net" then
         local up = a == true
         ui.online = up
+        if not up and type(b) == "table" and b.err and b.err ~= "" then
+            -- C3 报的错误（配网没成功时是 wifi_connect_failed:<SSID>）直接显示出来
+            flash("网卡：" .. tostring(b.err), 8000)
+        end
         if M.w.net then
             if up then
                 set_text(M.w.net, "WiFi 已连接")
