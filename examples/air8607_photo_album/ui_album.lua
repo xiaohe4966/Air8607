@@ -99,6 +99,8 @@ local ui = {
     library = {},
     lib_count = 0,
     lib_bytes = 0,
+    lib_seq = 0,
+    streaming = false,
     playlist = {},
     play_idx = 0,
     history = {},
@@ -347,7 +349,7 @@ local function evict_old()
         local victim
         for _, e in pairs(ui.library) do
             if (not ui.current or e.id ~= ui.current.id)
-               and (victim == nil or tostring(e.at or "") < tostring(victim.at or "")) then
+               and (victim == nil or (e.seq or 0) < (victim.seq or 0)) then
                 victim = e
             end
         end
@@ -386,8 +388,26 @@ local function playlist_has(id)
     return false
 end
 
+-- 库里最新下载的一张
+local function newest_entry()
+    local best
+    for _, e in pairs(ui.library) do
+        if not best or (e.seq or 0) > (best.seq or 0) then best = e end
+    end
+    return best
+end
+
 -- 取下一张本地照片；文件坏了就剔出库继续下一张
 local function next_local()
+    if ui.streaming then
+        -- 没有 TF 卡：照片是联网流着来的，库里只有最近两张，
+        -- 所以「下一张」= 最新下载到的那张；没有新的就等下一张下载完
+        local e = newest_entry()
+        if e and (not ui.current or ui.current.demo or e.id ~= ui.current.id) then
+            return e
+        end
+        return nil
+    end
     for _ = 1, 200 do
         if #ui.playlist == 0 then
             build_playlist()
@@ -530,8 +550,13 @@ local function on_page(ok, info, err)
     for _, item in ipairs(items) do
         local id = tonumber(item.id) or 0
         if id > 0 and not ui.library[id] then
-            table.insert(ui.dlq, item)
-            fresh = fresh + 1
+            if ui.streaming and #ui.dlq >= 2 then
+                -- 没有卡：RAM 只留两张，多余的直接跳过（索引游标会往前走，
+                -- 下一轮自然会换新的），别让一张下不下的照片把流程卡住
+            else
+                table.insert(ui.dlq, item)
+                fresh = fresh + 1
+            end
         end
     end
     ui.total = tonumber(info.total) or ui.total
@@ -646,7 +671,7 @@ local function do_switch(tag)
         return true
     end
     ui.waiting = true
-    flash("本地没有更多照片了，正在等网络补新…", 5000)
+    flash(ui.streaming and "正在等下一张下载完…" or "本地没有更多照片了，正在等网络补新…", 5000)
     ensure_flow()
     return false
 end
@@ -718,11 +743,15 @@ local function on_event(ev, a, b)
         local e = { id = a.id, w = a.w, h = a.h, bytes = a.len,
             like = (item and item.lk) or 0, at = item and item.at, path = a.path }
         e.liked = e.like == 1
-        if not ui.library[e.id] then
+        local dup = ui.library[e.id] ~= nil
+        if dup then
+            e.seq = ui.library[e.id].seq
+        else
+            ui.lib_seq = ui.lib_seq + 1
+            e.seq = ui.lib_seq
             ui.lib_count = ui.lib_count + 1
             ui.lib_bytes = ui.lib_bytes + (e.bytes or 0)
         end
-        local dup = ui.library[e.id] ~= nil
         ui.library[e.id] = e
         if dup then
             library_rewrite()
@@ -736,7 +765,13 @@ local function on_event(ev, a, b)
         log.info("album", "入库", e.id, ui.lib_count, ui.lib_bytes)
         -- 先接着下载下一张，再决定要不要切画面：下载和索引用的是同一条串口，
         -- 反过来会让正在跑的索引请求被顶掉
-        if not ui.current or ui.current.demo then
+        if ui.streaming then
+            -- 没有 TF 卡：照片是联网流着来的，下完一张就切过去，旧的那张随后被淘汰
+            -- （RAM 放不下），所以每张都是新照片，不会来回放同样那两张
+            if not ui.current or ui.current.demo or ui.current.id ~= e.id then
+                show_photo(e)
+            end
+        elseif not ui.current or ui.current.demo then
             show_photo(e)
         else
             flash(string.format("已存 %d 张 · 新增 #%s", ui.lib_count, tostring(e.id)), 2000)
@@ -1128,6 +1163,8 @@ function M.build(parent)
     math.randomseed(os.time())
 
     store_dir = mount_store()
+    -- 没有 TF 卡就靠 C3 联网流式取图：RAM 只留最近两张，来一张切一张
+    ui.streaming = (store_dir == DIR_RAM)
     -- RAM 太小只留最近两张；TF 卡按用户要求不自动删，满了就停下不下载
     if store_dir == DIR_SD then
         ui.store_max = nil
