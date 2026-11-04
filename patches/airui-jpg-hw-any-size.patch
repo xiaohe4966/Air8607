@@ -1,0 +1,18 @@
+--- a/components/airui/inc/luat_airui_conf.h
++++ b/components/airui/inc/luat_airui_conf.h
+@@ -168,6 +168,15 @@
+     #endif
+     #define LV_IMAGE_HEADER_CACHE_DEF_CNT 64        /* 64个图片头缓存 */
+ 
++    /* 让非 16 对齐的 JPEG（1024×600 等）也走平台硬件 JPEG 解码。
++     * 默认情况下 AirUI 会因为「尺寸不是 16 的倍数」判成 risky，绕开硬件解码、
++     * 退回软件解码；软件解码要 w*h*3 的连续内存（1024×600 = 1.84 MB），
++     * 而且这块缓冲和图片缓存条目抢同一个内存池，攒几张就分不出来 →
++     * 整屏照片黑屏。硬件解码直接写进绘制缓冲，既快又省内存。
++     * 注意：这条规则本来是给「某些平台的硬件解码器处理非 16 对齐会崩」的机型兜底的，
++     * 打开前要在这块板子上实测确认硬件解码器能吃 1024×600。 */
++    #define LUAT_USE_AIRUI_JPG_HW_ANY_SIZE
++
+ #else
+     /* 默认配置（如果未定义平台） */
+     /* 使用 lv_conf.h 中的默认值，这里不需要重新定义 */
