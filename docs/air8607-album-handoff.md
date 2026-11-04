@@ -229,6 +229,32 @@ J110 全部针脚：`1 RX1`、`2 TX1`、`3 GND`、`4 VBAT`、`5 RX2`、`6 TX2`�
   默认间隔改成 5 分钟 → 约 15 分钟重启一次。重启后照片库和游标都在卡上，直接接着播。
   想调就把 `ui_album.lua` 里的 `REBOOT_AFTER`（当前 3）和 `INTERVAL_DEFAULT`（当前 300）改掉。
 
+### 6.2a 根因在固件源码里（AirUI 是开源的）
+
+`https://gitee.com/openLuat/LuatOS` 主仓库里 **`components/airui/` 就是 AirUI 的全部源码**
+（自带 LVGL9 内核、hzjpeg 解码器、图片缓存），另有 `components/lvgl`、`components/hzfont`。
+按源码可以把两个现象解释到函数级别：
+
+- **缓存按路径，不看文件内容**：`components/airui/lvgl9/src/misc/cache/instance/lv_image_cache.c`
+  里 `image_cache_common_compare()` 对 `LV_IMAGE_SRC_FILE` 只做 `lv_strcmp(路径)`。
+  → 同一路径改了内容缓存照样命中 → 屏幕停在那一张（6.1）。
+  LVGL 本来就有 `lv_image_cache_drop(src)` / `lv_image_cache_resize(size, evict_now)`，
+  但 **AirUI 没暴露给 Lua**（`binding/luat_lib_airui.c` 里只有字体的 `cache_size`）。
+- **解码缓冲和缓存抢同一个池子**：`components/airui/lvgl9/src/libs/hzjpeg/lv_hzjpeg.c`
+  用 `lv_draw_buf_create_ex(image_cache_draw_buf_handlers, w, h, LV_COLOR_FORMAT_RGB888, ...)`
+  分配 **w*h*3** 的中间缓冲（1024×600 = 1.84 MB），解完再存一份 RGB565（1.2 MB）进缓存
+  → 每张照片约 3 MB；缓存池上限 `LV_CACHE_DEF_SIZE`（`components/airui/inc/luat_airui_conf.h`）
+  默认 4 MB，可用 `LUAT_USE_AIRUI_IMAGE_CACHE_SIZE` 覆盖 → 缓存里有 2 张时就分不出 1.84 MB
+  → `decode fail` → 黑屏（6.2）。
+  注意：主仓库是新版，板子上跑的 V1028 `.soc` 未必一致，具体数值以手上的 `.soc` 为准。
+
+**如果有人要重编固件**，最小改动是给 AirUI 加两个 Lua 绑定（暴露已有的
+`lv_image_cache_drop(src)` / `lv_image_cache_resize(n)`），换图前把旧路径的缓存条目删掉，
+池里就永远只有一张 → 每张都解得出来 → 不黑屏也不用重启整机；
+或者把 `LUAT_USE_AIRUI_IMAGE_CACHE_SIZE` 调大 / 让解码直接出 RGB565。
+但注意：主仓库只有 `bsp/air1601` 和 `bsp/pc`，**没有 Air1603/Air8607 的 BSP**，
+重编还需要厂商的 Air1603 SDK（BSP + 打包工具链 + 芯片专有库）。
+
 ### 6.2b 试过并且走不通的路：重置 AirUI 引擎
 
 想用 `airui.deinit()` + `airui.init()` 把固件不回收的解码内存就地还回去（比重启整机轻得多），
