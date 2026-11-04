@@ -255,6 +255,11 @@ J110 全部针脚：`1 RX1`、`2 TX1`、`3 GND`、`4 VBAT`、`5 RX2`、`6 TX2`�
 但注意：主仓库只有 `bsp/air1601` 和 `bsp/pc`，**没有 Air1603/Air8607 的 BSP**，
 重编还需要厂商的 Air1603 SDK（BSP + 打包工具链 + 芯片专有库）。
 
+**这个补丁已经写好了**：`patches/airui-image-cache-lua.patch`（用法见 `patches/README.md`），
+`ui_album.lua` 里也已做好兼容——检测到 `airui.cache_drop` 就切到「单显示路径 + 换图前清缓存 +
+不等 2 秒桶 + 不重启整机」的模式，没有就沿用现在的绕法。实测老固件上日志是
+`图片缓存可控 0`，行为和之前完全一致。
+
 ### 6.2b 试过并且走不通的路：重置 AirUI 引擎
 
 想用 `airui.deinit()` + `airui.init()` 把固件不回收的解码内存就地还回去（比重启整机轻得多），

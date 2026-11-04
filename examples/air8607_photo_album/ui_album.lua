@@ -31,6 +31,12 @@ local VIEW_PATHS = {}
 local VIEW_CUR = 1
 local last_write = {}
 
+-- 打了 patches/airui-image-cache-lua.patch 的新固件能主动删图片缓存条目，
+-- 那就不用轮换显示路径、不用等 2 秒桶、也不用重启整机了；
+-- 老固件（缓存按路径记、且从 Lua 侧作废不了）走下面那套绕法。
+local HAVE_CACHE_DROP = type(airui.cache_drop) == "function"
+log.info("album", "图片缓存可控", HAVE_CACHE_DROP and 1 or 0)
+
 local C = {
     bg = 0x000000,
     surface = 0x0F1E31,
@@ -225,11 +231,18 @@ end
 -- 3) FAT 的修改时间只有 2 秒精度（秒数存的是 >>1）。两次写落在同一个 2 秒桶里，
 --    缓存同样认不出来，所以同一条路径的两次写入要隔开 2 秒。
 local function next_view_path()
+    if HAVE_CACHE_DROP then
+        -- 能主动清缓存就只用一条路径：缓存里永远只有一份，内存够
+        return VIEW_PATHS[1]
+    end
     VIEW_CUR = 3 - VIEW_CUR
     return VIEW_PATHS[VIEW_CUR]
 end
 
 local function stage_delay(path)
+    if HAVE_CACHE_DROP then
+        return 0   -- 缓存能主动清掉，写入间隔不用管 2 秒桶
+    end
     local lw = last_write[path]
     if not lw then return 0 end
     local t = os.time()
@@ -275,6 +288,11 @@ local function render_image(meta, path, staged)
     destroy_image(ui.img)
     if ui.img_back then destroy_image(ui.img_back) end
     ui.img_back = nil
+    if HAVE_CACHE_DROP and path then
+        -- 旧控件已经删了（它还指着缓存里的条目），现在把这条路径的缓存条目也删掉：
+        -- 池子里腾出位置，这次解码一定分配得到 1.8 MB 连续内存
+        pcall(airui.cache_drop, path)
+    end
     ui.img = airui.image({
         parent = ui.layer,
         x = 0, y = 0, w = SCREEN_W, h = SCREEN_H,
@@ -620,6 +638,9 @@ end
 -- 整屏解码的内存用完之前重启一次设备：固件没法回收整屏解码的连续内存，
 -- 重启是最干脆的清法（照片库在卡上，重启不丢，接着上次的位置继续）
 local function reboot_soon()
+    if HAVE_CACHE_DROP then
+        return   -- 能清缓存就不用重启整机了
+    end
     ui.decoded = ui.decoded + 1
     if ui.decoded < REBOOT_AFTER then return end
     log.info("album", "已显示", ui.decoded, "张，准备重启设备")

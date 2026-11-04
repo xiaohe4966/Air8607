@@ -1,0 +1,67 @@
+--- a/components/airui/binding/luat_lib_airui.c
++++ b/components/airui/binding/luat_lib_airui.c
+@@ -17,6 +17,7 @@
+ #include "../inc/luat_airui_binding.h"
+ #include "../inc/luat_airui_symbol.h"
+ #include "lvgl9/src/themes/default/lv_theme_default.h"
++#include "lvgl9/src/misc/cache/instance/lv_image_cache.h"
+ #include "luat_conf_bsp.h"
+ #if defined(LUAT_USE_AIRUI_LUATOS)
+ #include "../src/platform/luatos/luat_airui_platform_luatos.h"
+@@ -54,6 +55,8 @@
+ static int l_airui_font_load(lua_State *L);
+ static int l_airui_version(lua_State *L);
+ static int l_airui_debug(lua_State *L);
++static int l_airui_cache_drop(lua_State *L);
++static int l_airui_cache_resize(lua_State *L);
+ 
+ // Button 模块声明
+ extern void airui_register_button_meta(lua_State *L);
+@@ -182,6 +185,8 @@
+     {"keypad_unsubscribe", ROREG_FUNC(l_airui_keypad_unsubscribe)},
+     {"font_load", ROREG_FUNC(l_airui_font_load)},
+     {"debug", ROREG_FUNC(l_airui_debug)},
++    {"cache_drop", ROREG_FUNC(l_airui_cache_drop)},
++    {"cache_resize", ROREG_FUNC(l_airui_cache_resize)},
+     {"version", ROREG_FUNC(l_airui_version)},
+     // 废弃api接口说明，当前保持兼容，todo：后续2.0版本将删除
+     {"indev_bind_touch", ROREG_FUNC(l_airui_indev_bind_touch_deprecated)}, // 废弃，使用 airui.device_bind_touch 替代
+@@ -1062,6 +1067,38 @@
+ }
+ 
+ /**
++ * 删除图片缓存里某个路径的条目
++ * @api airui.cache_drop(src)
++ * @string src 图片路径，缓存里按路径做键（不含修改时间/大小）
++ * @return bool 成功返回 true
++ * @note 同一个路径换了内容后调用它，下次绘制就会重新读文件解码。
++ *       整屏照片的解码缓冲（w*h*3）和缓存条目抢同一个池子，
++ *       换图前删掉旧条目可以保证解码一定分配得到内存。
++ */
++static int l_airui_cache_drop(lua_State *L) {
++    const char * src = luaL_checkstring(L, 1);
++    lv_image_cache_drop(src);
++    lua_pushboolean(L, 1);
++    return 1;
++}
++
++/**
++ * 调整图片缓存上限
++ * @api airui.cache_resize(size)
++ * @int size 新的上限字节数，0 表示关闭图片缓存
++ * @return bool 成功返回 true
++ */
++static int l_airui_cache_resize(lua_State *L) {
++    lua_Integer size = luaL_checkinteger(L, 1);
++    if (size < 0) {
++        size = 0;
++    }
++    lv_image_cache_resize((uint32_t)size, true);
++    lua_pushboolean(L, 1);
++    return 1;
++}
++
++/**
+  * 获取 AIRUI 库的版本号
+  * @api airui.version()
+  * @return string 当前版本（由 AIRUI_VERSION 提供）
