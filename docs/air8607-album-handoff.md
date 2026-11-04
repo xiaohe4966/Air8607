@@ -252,12 +252,21 @@ J110 全部针脚：`1 RX1`、`2 TX1`、`3 GND`、`4 VBAT`、`5 RX2`、`6 TX2`�
   → `decode fail` → 黑屏（6.2）。
   注意：主仓库是新版，板子上跑的 V1028 `.soc` 未必一致，具体数值以手上的 `.soc` 为准。
 
-**如果有人要重编固件**，最小改动是给 AirUI 加两个 Lua 绑定（暴露已有的
-`lv_image_cache_drop(src)` / `lv_image_cache_resize(n)`），换图前把旧路径的缓存条目删掉，
-池里就永远只有一张 → 每张都解得出来 → 不黑屏也不用重启整机；
-或者把 `LUAT_USE_AIRUI_IMAGE_CACHE_SIZE` 调大 / 让解码直接出 RGB565。
+**最彻底的修法是打开 AirUI 已有的编译开关 `LUAT_USE_AIRUI_JPG_HW_ANY_SIZE`**
+（`components/airui/inc/luat_airui_conf.h`）：让 1024×600 这种非 16 对齐的 JPEG 也走
+**芯片自带的硬件 JPEG 解码**（`components/luat_image` 的 `luat_jpeg_hw_decode`，
+弱符号、由芯片 BSP 提供实现）—— 硬件解码直接写进绘制缓冲，既不需要那 1.84 MB 的软件
+中间缓冲，也不会和图片缓存抢池子 → 不黑屏而且换图快得多（硬件几毫秒 vs 软件几百毫秒）。
+默认不用硬件解码，就是因为 `luat_airui_jpg_decoder_luatos.c` 把非 16 对齐的文件判成
+`risky`（这条兜底是给「某些平台硬件解码器会崩」的机型准备的，**打开前要在真机上实测**）。
+
+其次才是给 AirUI 加两个 Lua 绑定（暴露已有的 `lv_image_cache_drop(src)` /
+`lv_image_cache_resize(n)`），换图前把旧路径的缓存条目删掉，池里就永远只有一张。
+两个补丁都写在 `patches/`（用法见 `patches/README.md`）。
 但注意：主仓库只有 `bsp/air1601` 和 `bsp/pc`，**没有 Air1603/Air8607 的 BSP**，
-重编还需要厂商的 Air1603 SDK（BSP + 打包工具链 + 芯片专有库）。
+重编还需要厂商的 Air1603 SDK（BSP + 工具链 + 芯片专有库 + `.soc` 打包）；
+Air1603 官网目前也**只有 V1028 一个固件**（2026.10.15），没有更新的现成固件可换
+（备注里写用户可用 RAM 约 11.8MB = 2MB Lua + 9.8MB 系统，和我们量到的 5.47MB 空闲对得上）。
 
 **这个补丁已经写好了**：`patches/airui-image-cache-lua.patch`（用法见 `patches/README.md`），
 `ui_album.lua` 里也已做好兼容——检测到 `airui.cache_drop` 就切到「单显示路径 + 换图前清缓存 +
