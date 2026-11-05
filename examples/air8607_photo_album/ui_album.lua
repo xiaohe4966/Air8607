@@ -16,9 +16,11 @@ local SCREEN_W, SCREEN_H = 1024, 600
 local BL_PWM_CH = 3
 local BRIGHT_MIN, BRIGHT_MAX = 10, 100
 local INTERVAL_MIN, INTERVAL_MAX, INTERVAL_DEFAULT = 10, 300, 300
--- 整屏解码要 ~1.8 MB 连续内存，固件连着解几张之后就用不出来了（照片区域会黑）。
--- 打了 patches/patch_soc.py 的补丁（图片缓存上限调到 1 MB）后这个问题就没有了，
--- 所以默认不再重启设备；把 REBOOT_AFTER 设成 >0 可以退回「定期重启清内存」的旧办法。
+-- 整屏解码要 ~1.8 MB 连续内存，旧照片的缓存条目还在池子里时再解一张就要 3.7 MB，
+-- 连着换几张（尤其是连点「下一张」）就分不出来（照片区域会黑）。
+-- 打了 patches/patch_soc.py 的补丁（把图片缓存关掉，--cache-size 0）后，
+-- 解码缓冲画完即释放，连点多少张都不累积，所以默认不再重启设备；
+-- 把 REBOOT_AFTER 设成 >0 可以退回「定期重启清内存」的旧办法。
 local REBOOT_AFTER = 0
 local PAGE_RETRY_MS = 15000
 local SYNC_IDLE_MS = 300000

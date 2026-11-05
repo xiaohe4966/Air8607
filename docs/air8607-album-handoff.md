@@ -235,16 +235,23 @@ J110 全部针脚：`1 RX1`、`2 TX1`、`3 GND`、`4 VBAT`、`5 RX2`、`6 TX2`�
 
 ### 6.2a 根因（已定位并用补丁解决）
 
-**AirUI 的图片缓存上限（3 MB）比 LVGL 的堆（约 1.5 MB）还大。**
-每张 1024×600 的照片解码成 RGB565 要 1.17 MB 常驻缓存，解码瞬间还要一块 ~1.84 MB 的连续内存，
-两块都从同一个池子里出 → 攒到第 3、4 张就分不出来 → `decode fail: hzjpeg alloc fail … 连续内存不足`
-→ 照片区域黑到下次换图。（PSRAM 空闲总量全程稳定 5.47 MB，不是泄漏。）
+整屏 JPEG 走软件解码，产物是一块 **RGB888 = 1024×600×3 = 1.84 MB 的连续缓冲**
+（`lv_hzjpeg.c` 里 `lv_draw_buf_create_ex(..., LV_COLOR_FORMAT_RGB888, ...)`），
+这块缓冲同时被塞进 AirUI 的图片缓存（键是文件路径）。换下一张时：
+旧条目的淘汰发生在新条目 `lv_cache_add` 的时候，而新照片的 1.84 MB 解码缓冲**在此之前**就要分配
+→ 瞬时占用 **1.84 × 2 = 3.7 MB** 连续内存；连点几次「下一张」就分不出来 →
+`decode fail: hzjpeg alloc fail … 连续内存不足` → 照片区域黑到下次换图。
+（PSRAM 空闲总量稳定在 7.3 MB 左右，不是泄漏，是连续块不够。）
 
-**解法**：`patches/patch_soc.py` 给 `.soc` 打个补丁，把 `lv_init` 里那条
-`mov.w r0, #0x300000`（图片缓存上限）改成 **2 MB**。2 MB 装得下解码要的 1.84 MB，又只能驻留
-1 张 1.17 MB 的解码结果，不会像 3 MB 那样攒两张把连续内存挤爆。**只改 1 个字节**。
+**解法**：`patches/patch_soc.py` 把 `lv_init` 里那条 `mov.w r0, #0x300000`（图片缓存上限）
+改成 **0，关闭图片缓存**。解码缓冲由这次绘制持有、画完即释放，池里最多只有一块 1.84 MB。
+**只改 1 个字节**。2026-11-05 实机：开机后连点 20 次「下一张」（1 秒一次）——
+**21 次解码（开机 1 + 每次换图 1）、0 次 `decode fail`、0 次 `open fail`、PSRAM 空闲稳定**；
+之后静置 30 秒没有多余的解码。代价是照片每次重绘要重新解码；本相册只在换图/切换控制栏时重绘，
+顶栏底栏不透明，每秒更新进度条不会让照片重画。
 
-**不能改成 1 MB**（2026-11-05 实机复现）：jpg 解码器的 `decoder_open` 里有
+**其他上限值都不行**：2 MB 只是缓解（换图瞬间仍要 3.7 MB，连点第 3、4 张仍失败，实机复现）；
+1 MB / 1.5 MB 更不能用（2026-11-05 实机复现）：jpg 解码器的 `decoder_open` 里有
 `w*h*3 > 缓存上限` 直接拒绝的单图校验，日志 `open fail: 图片 1024x600 过大，解码需
 w*h*3=1843200 字节，超过单图上限 1048576 字节` —— 1 MB 时每张整屏照片都显示不出来，
 而且 `add_to_cache` 失败还会把已解码缓冲销毁。
@@ -270,34 +277,26 @@ AirUI 那条兜底规则就是为「某些平台硬解处理非 16 对齐会崩�
   → 同一路径改了内容缓存照样命中 → 屏幕停在那一张（6.1）。
   LVGL 本来就有 `lv_image_cache_drop(src)` / `lv_image_cache_resize(size, evict_now)`，
   但 **AirUI 没暴露给 Lua**（`binding/luat_lib_airui.c` 里只有字体的 `cache_size`）。
-- **解码缓冲和缓存抢同一个池子**：`components/airui/lvgl9/src/libs/hzjpeg/lv_hzjpeg.c`
+- **解码缓冲就是缓存内容**：`components/airui/lvgl9/src/libs/hzjpeg/lv_hzjpeg.c`
   用 `lv_draw_buf_create_ex(image_cache_draw_buf_handlers, w, h, LV_COLOR_FORMAT_RGB888, ...)`
-  分配 **w*h*3** 的中间缓冲（1024×600 = 1.84 MB），解完再存一份 RGB565（1.2 MB）进缓存
-  → 每张照片约 3 MB；缓存池上限 `LV_CACHE_DEF_SIZE`（`components/airui/inc/luat_airui_conf.h`）
-  默认 4 MB，可用 `LUAT_USE_AIRUI_IMAGE_CACHE_SIZE` 覆盖 → 缓存里有 2 张时就分不出 1.84 MB
-  → `decode fail` → 黑屏（6.2）。
+  分配 **w*h*3** 的缓冲（1024×600 = 1.84 MB），解完把**这一块**直接存进图片缓存
+  （`search_key.slot.size = decoded->data_size`），并没有再转一份 RGB565。
+  缓存池上限源码默认 4 MB / 另一处 1 MB（`components/airui/inc/luat_airui_conf.h`），
+  板子上跑的 V1028 `.soc` 是 3 MB（`lv_init` 里 `mov.w r0, #0x300000`）。
+  换图时旧条目还在池里、新缓冲已经申请 → 峰值 3.7 MB；连点几次就分不出来 → `decode fail` → 黑屏（6.2）。
   注意：主仓库是新版，板子上跑的 V1028 `.soc` 未必一致，具体数值以手上的 `.soc` 为准。
 
-**最彻底的修法是打开 AirUI 已有的编译开关 `LUAT_USE_AIRUI_JPG_HW_ANY_SIZE`**
-（`components/airui/inc/luat_airui_conf.h`）：让 1024×600 这种非 16 对齐的 JPEG 也走
-**芯片自带的硬件 JPEG 解码**（`components/luat_image` 的 `luat_jpeg_hw_decode`，
-弱符号、由芯片 BSP 提供实现）—— 硬件解码直接写进绘制缓冲，既不需要那 1.84 MB 的软件
-中间缓冲，也不会和图片缓存抢池子 → 不黑屏而且换图快得多（硬件几毫秒 vs 软件几百毫秒）。
-默认不用硬件解码，就是因为 `luat_airui_jpg_decoder_luatos.c` 把非 16 对齐的文件判成
-`risky`（这条兜底是给「某些平台硬件解码器会崩」的机型准备的，**打开前要在真机上实测**）。
+**硬件解码那条路别走**：打开 AirUI 已有的 `LUAT_USE_AIRUI_JPG_HW_ANY_SIZE`
+（`components/airui/inc/luat_airui_conf.h`）让 1024×600 这种非 16 对齐的 JPEG 也走芯片硬解，
+实测 UI 卡住约 36 秒并连出幽灵点击（相册自己刷下一张、连成重启循环）——
+`luat_airui_jpg_decoder_luatos.c` 里「非 16 对齐判 risky」的兜底是给「某些平台硬解会崩」准备的，
+不要绕过（详见 6.2a 和 `patches/README.md`）。
 
-其次才是给 AirUI 加两个 Lua 绑定（暴露已有的 `lv_image_cache_drop(src)` /
-`lv_image_cache_resize(n)`），换图前把旧路径的缓存条目删掉，池里就永远只有一张。
-两个补丁都写在 `patches/`（用法见 `patches/README.md`）。
-但注意：主仓库只有 `bsp/air1601` 和 `bsp/pc`，**没有 Air1603/Air8607 的 BSP**，
-重编还需要厂商的 Air1603 SDK（BSP + 工具链 + 芯片专有库 + `.soc` 打包）；
-Air1603 官网目前也**只有 V1028 一个固件**（2026.10.15），没有更新的现成固件可换
-（备注里写用户可用 RAM 约 11.8MB = 2MB Lua + 9.8MB 系统，和我们量到的 5.47MB 空闲对得上）。
-
-**这个补丁已经写好了**：`patches/airui-image-cache-lua.patch`（用法见 `patches/README.md`），
-`ui_album.lua` 里也已做好兼容——检测到 `airui.cache_drop` 就切到「单显示路径 + 换图前清缓存 +
-不等 2 秒桶 + 不重启整机」的模式，没有就沿用现在的绕法。实测老固件上日志是
-`图片缓存可控 0`，行为和之前完全一致。
+**要正规修固件**：源码层最直接的改法是让 jpg 解码走 `no_cache`，或者解码前先淘汰旧缓存条目，
+这样解码缓冲画完即释放。`patches/airui-image-cache-lua.patch` 是做 `airui.cache_drop()` 绑定的参考，
+`ui_album.lua` 检测到 `airui.cache_drop` 会自动切到「换图前清缓存」模式。但重编 `.soc` 需要厂商 SDK
+（主仓库只有 `bsp/air1601` 和 `bsp/pc`，没有 Air1603/Air8607 的 BSP），所以现场直接用
+`patch_soc.py` 改二进制（缓存上限改 0）即可，不需要重编。Air1603 官网目前只有 V1028 一个固件（2026.10.15）。
 
 ### 6.2b 试过并且走不通的路：重置 AirUI 引擎
 
