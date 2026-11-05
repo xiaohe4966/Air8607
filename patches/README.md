@@ -2,23 +2,27 @@
 
 ## 结论先说
 
-整屏照片黑屏的根因是 **AirUI 的图片缓存上限（3 MB）比 LVGL 的堆（约 1.5 MB）还大**：
-每张 1024×600 的照片解码成 RGB565 要 1.17 MB 常驻缓存，解码瞬间还要一块 ~1.84 MB 的连续内存，
-两块都从同一个池子里出 → 攒到第 3、4 张就分不出来 → 日志 `decode fail: hzjpeg alloc fail … 连续内存不足`
-→ 照片区域黑到下次换图。
+整屏照片黑屏有两层原因：
 
-**修法：把图片缓存上限调到 1 MB**（`patches/patch_soc.py`）。1 MB 装不下 1.17 MB 的解码结果，
-缓存等于不缓存，解码结果直接从通用堆分配 → 每次换图都解得出来。
+1. **3 MB 的图片缓存上限比 LVGL 的堆还大**：每张 1024×600 的照片解码成 RGB565 要 1.17 MB
+   常驻缓存，解码瞬间还要一块 ~1.84 MB 的连续内存，两块都从同一个池子里出 → 攒到第 3、4 张
+   就分不出来 → 日志 `decode fail: hzjpeg alloc fail … 连续内存不足` → 照片区域黑到下次换图。
+2. **缓存上限同时是「单图上限」**：jpg 解码器的 `decoder_open` 里有
+   `w*h*3 > 图片缓存上限` 就直接拒绝的校验，日志是
+   `open fail: 图片 1024x600 过大，解码需 w*h*3=1843200 字节，超过单图上限 … 无法显示`。
+   所以把上限改成 1 MB 会让**每张** 1024×600 都显示不出来（2026-11-05 实机复现）。
 
-实测（打上补丁、60 秒/张连跑 8 分钟）：**8 次换图、0 次 decode fail、无重启、无异常**。
+**修法：把图片缓存上限调到 2 MB**（`patches/patch_soc.py`）。2 MB 装得下 1.84 MB 的解码缓冲，
+又只能驻留 1 张 1.17 MB 的解码结果，不会像 3 MB 那样攒两张把连续内存挤爆。
+2026-11-05 实机：1 MB 时每张都 `open fail`；2 MB 后日志无 `open fail`、无 `decode fail`。
 
 ## 用法
 
 ```bash
 pip install py7zr
 python3 patches/patch_soc.py firmware/LuatOS-SoC_V1028_Air1603_102.soc \
-    -o firmware/LuatOS-SoC_V1028_Air1603_102_cache1m.soc
-luatos-cli flash run --soc firmware/LuatOS-SoC_V1028_Air1603_102_cache1m.soc \
+    -o firmware/LuatOS-SoC_V1028_Air1603_102_cache2m.soc
+luatos-cli flash run --soc firmware/LuatOS-SoC_V1028_Air1603_102_cache2m.soc \
     --port <串口> --script examples/air8607_photo_album
 ```
 
@@ -26,15 +30,16 @@ luatos-cli flash run --soc firmware/LuatOS-SoC_V1028_Air1603_102_cache1m.soc \
 
 ```text
 已改 1 个字节：luatos.bin 偏移 0x126952（vaddr 0x14126952）
-  图片缓存上限 1048576 字节（1.0 MB）
+  图片缓存上限 2097152 字节（2.0 MB）
   改前:  0x14126952  4ff44010  mov.w  r0, #0x300000      ; 3 MB
-  改后:  0x14126952  4ff48010  mov.w  r0, #0x100000      ; 1 MB
+  改后:  0x14126952  4ff40010  mov.w  r0, #0x200000      ; 2 MB
 ```
 
 只改应用区（`.soc` 里 `luatos.bin`，刷在 0x14000000）的 1 个字节，bootloader、NVM、文件系统都没动；
 出问题把原始 `.soc` 再刷回去即可。
 
 可用的缓存上限：1 MB / 1.5 MB / 2 MB / 2.5 MB / 3 MB（`--cache-size` 指定，3 MB 是原值）。
+**1 MB / 1.5 MB 小于 1024×600 需要的 1.84 MB，会被单图校验拒掉，不要用。**
 
 ## 原理（源码位置）
 

@@ -12,14 +12,19 @@ AirUI（components/airui）把整屏 JPEG 解码成 RGB565 放进 LVGL 的图片
 
 补丁做的事
 ----------
-把那个缓存上限从 3 MB 改成 1 MB（可指定）：1024×600 的解码结果本来就放不进 1 MB，
-缓存等于不缓存，解码结果直接从通用堆分配 → 每次换图都能解出来，不再黑屏。
-只改 1 个字节。
+把那个缓存上限从 3 MB 改成 2 MB（可指定）。只改 1 个字节。
+
+**不能改成 1 MB**：AirUI 的 jpg 解码器在 decoder_open 里有一道校验
+`w*h*3 > 图片缓存上限` 就直接拒绝（日志 `open fail: 图片 1024x600 过大，解码需
+w*h*3=1843200 字节，超过单图上限 1048576 字节`），而且解码用的 RGB888 缓冲
+（1024×600 要 1.84 MB）也是从图片缓存的池子里分配的。1 MB 等于所有整屏照片都显示不出来。
+2 MB 才装得下 1.84 MB 的解码缓冲，同时缓存只能驻留 1 张解码结果（1.17 MB），
+不会像 3 MB 那样攒到两三张把连续内存挤爆。
 
 用法
 ----
     pip install py7zr
-    python3 patch_soc.py LuatOS-SoC_V1028_Air1603_102.soc [-o 输出.soc] [--cache-size 1048576]
+    python3 patch_soc.py LuatOS-SoC_V1028_Air1603_102.soc [-o 输出.soc] [--cache-size 2097152]
 
 刷固件仍用官方工具：
 
@@ -77,9 +82,9 @@ def patch_bin(data, size):
 def main():
     ap = argparse.ArgumentParser(description="给 .soc 打上「调小 AirUI 图片缓存」的补丁")
     ap.add_argument("soc", help="原始 .soc 文件")
-    ap.add_argument("-o", "--output", help="输出 .soc（默认 <原名>_cache1m.soc）")
-    ap.add_argument("--cache-size", type=lambda v: int(v, 0), default=0x100000,
-                    help="新的图片缓存上限字节数，默认 0x100000（1 MB）")
+    ap.add_argument("-o", "--output", help="输出 .soc（默认 <原名>_cache2m.soc）")
+    ap.add_argument("--cache-size", type=lambda v: int(v, 0), default=0x200000,
+                    help="新的图片缓存上限字节数，默认 0x200000（2 MB，1024×600 至少要这个）")
     args = ap.parse_args()
 
     try:
@@ -88,7 +93,7 @@ def main():
         raise SystemExit("缺少 py7zr：pip install py7zr")
 
     src = os.path.abspath(args.soc)
-    out = os.path.abspath(args.output or src.replace(".soc", "_cache1m.soc"))
+    out = os.path.abspath(args.output or src.replace(".soc", "_cache2m.soc"))
     tmp = tempfile.mkdtemp(prefix="socpatch")
     try:
         with py7zr.SevenZipFile(src, "r") as z:
