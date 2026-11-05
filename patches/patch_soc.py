@@ -1,30 +1,40 @@
 #!/usr/bin/env python3
 """
-给 Air1603/Air8607 的 .soc 打补丁：把 AirUI 的图片缓存上限调小。
+给 Air1603/Air8607 的 .soc 打补丁：关掉（或调小）AirUI 的图片缓存。
 
 背景
 ----
-AirUI（components/airui）把整屏 JPEG 解码成 RGB565 放进 LVGL 的图片缓存，
-每张 1024×600 的照片约 1.17 MB。固件里图片缓存的预算是 **3 MB**
-（lv_init 里 `mov.w r0, #0x300000`），但 LVGL 的堆只有约 1.5 MB
-（.psram_ll_heap）—— 缓存比堆还大，攒到第 3、4 张照片时就再也分配不出解码需要的
-连续内存，日志是 `decode fail: hzjpeg alloc fail ... 连续内存不足`，照片区域黑屏。
+整屏 JPEG 解码出来的是一块 1024×600 RGB888 = 1.84 MB 的缓冲
+（lv_hzjpeg.c），这块缓冲同时也被塞进 LVGL 的图片缓存（缓存上限就是
+lv_init 里那条 `mov.w r0, #0x300000`，3 MB）。
+
+换下一张照片时，旧照片的缓存条目**还留在池子里**，新照片的解码缓冲又要再要
+1.84 MB —— 瞬时占用 1.84×2 = 3.69 MB。连续换几张（尤其是连点「下一张」），
+PSRAM 里就凑不出这么大的连续块，日志是
+`decode fail: hzjpeg alloc fail ... 连续内存不足`，照片区域黑到下次换图。
 
 补丁做的事
 ----------
-把那个缓存上限从 3 MB 改成 2 MB（可指定）。只改 1 个字节。
+把缓存上限改成 **0：整个图片缓存关掉**。这样解码结果由这次绘制持有，
+画完就释放，池子里任何时刻最多只有一块 1.84 MB —— 连点多少张都不会累积。
+AirUI 的代码对「缓存上限为 0」有专门分支（`cache_max > 0` 才做单图大小校验、
+`!lv_image_cache_is_enabled()` 时解码缓冲画完即释放），所以 0 是合法配置。
 
-**不能改成 1 MB**：AirUI 的 jpg 解码器在 decoder_open 里有一道校验
-`w*h*3 > 图片缓存上限` 就直接拒绝（日志 `open fail: 图片 1024x600 过大，解码需
-w*h*3=1843200 字节，超过单图上限 1048576 字节`），而且解码用的 RGB888 缓冲
-（1024×600 要 1.84 MB）也是从图片缓存的池子里分配的。1 MB 等于所有整屏照片都显示不出来。
-2 MB 才装得下 1.84 MB 的解码缓冲，同时缓存只能驻留 1 张解码结果（1.17 MB），
-不会像 3 MB 那样攒到两三张把连续内存挤爆。
+代价：照片每次重绘都要重新解码一次。相册里照片只在换图、隐藏/显示控制栏时重绘，
+实测可以接受；频繁重绘整屏图片的场景不适合用 0，可以改用 2 MB（见下）。
+
+其他可选值
+----------
+- 2 MB（`--cache-size 2097152`）：缓存能驻留 1 张解码结果，但换图瞬间仍是旧条目
+  1.84 MB + 新缓冲 1.84 MB = 3.69 MB 的峰值，连点「下一张」仍会失败，只是比 3 MB 好一点。
+- **不能改成 1 MB**：AirUI 的 jpg 解码器在 decoder_open 里有一道校验
+  `w*h*3 > 图片缓存上限` 就直接拒绝（日志 `open fail: 图片 1024x600 过大，解码需
+  w*h*3=1843200 字节，超过单图上限 1048576 字节`），1 MB 等于所有整屏照片都显示不出来。
 
 用法
 ----
     pip install py7zr
-    python3 patch_soc.py LuatOS-SoC_V1028_Air1603_102.soc [-o 输出.soc] [--cache-size 2097152]
+    python3 patch_soc.py LuatOS-SoC_V1028_Air1603_102.soc [-o 输出.soc] [--cache-size 0]
 
 刷固件仍用官方工具：
 
@@ -44,11 +54,20 @@ import tempfile
 CACHE_SIZE_PATTERN = bytes.fromhex("4ff44010")
 CACHE_SIZE_OFFSET = 0x126952          # luatos.bin 内偏移（vaddr 0x14126952 - 0x14000000）
 CACHE_SIZE_ENCODINGS = {
+    0x000000: "4ff00000",   # 0：关闭图片缓存（推荐，换图不再累积内存）
     0x100000: "4ff48010",   # 1 MB
     0x180000: "4ff4c010",   # 1.5 MB
     0x200000: "4ff40010",   # 2 MB
     0x280000: "4ff42010",   # 2.5 MB
     0x300000: "4ff44010",   # 3 MB（原始值）
+}
+OUTPUT_SUFFIX = {
+    0x000000: "nocache",
+    0x100000: "cache1m",
+    0x180000: "cache15m",
+    0x200000: "cache2m",
+    0x280000: "cache25m",
+    0x300000: "cache3m",
 }
 
 def disasm_note(old_bytes, new_bytes):
@@ -83,8 +102,8 @@ def main():
     ap = argparse.ArgumentParser(description="给 .soc 打上「调小 AirUI 图片缓存」的补丁")
     ap.add_argument("soc", help="原始 .soc 文件")
     ap.add_argument("-o", "--output", help="输出 .soc（默认 <原名>_cache2m.soc）")
-    ap.add_argument("--cache-size", type=lambda v: int(v, 0), default=0x200000,
-                    help="新的图片缓存上限字节数，默认 0x200000（2 MB，1024×600 至少要这个）")
+    ap.add_argument("--cache-size", type=lambda v: int(v, 0), default=0,
+                    help="新的图片缓存上限字节数，默认 0（关闭图片缓存，换图不累积内存）")
     args = ap.parse_args()
 
     try:
@@ -93,7 +112,8 @@ def main():
         raise SystemExit("缺少 py7zr：pip install py7zr")
 
     src = os.path.abspath(args.soc)
-    out = os.path.abspath(args.output or src.replace(".soc", "_cache2m.soc"))
+    suffix = OUTPUT_SUFFIX.get(args.cache_size, "patched")
+    out = os.path.abspath(args.output or src.replace(".soc", "_" + suffix + ".soc"))
     tmp = tempfile.mkdtemp(prefix="socpatch")
     try:
         with py7zr.SevenZipFile(src, "r") as z:
@@ -112,7 +132,10 @@ def main():
                 z.write(os.path.join(tmp, n), n)
 
         print(f"已改 1 个字节：luatos.bin 偏移 {hex(off)}（vaddr {hex(0x14000000 + off)}）")
-        print(f"  图片缓存上限 {args.cache_size} 字节（{args.cache_size / 1024 / 1024:.1f} MB）")
+        if args.cache_size == 0:
+            print("  图片缓存：关闭（换图时解码缓冲画完即释放）")
+        else:
+            print(f"  图片缓存上限 {args.cache_size} 字节（{args.cache_size / 1024 / 1024:.1f} MB）")
         print(disasm_note(old, patched[off:off + 4]))
         print(f"输出：{out}")
         print(f"刷写：luatos-cli flash run --soc {out} --port <串口> --script <脚本目录>")
