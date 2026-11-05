@@ -74,9 +74,12 @@
 #define API_HOST        "tool.he4966.cn"
 #define AP_SSID         "Air8607-C3"
 #define AP_PASS         "air8607wifi"
-#define FW_VERSION      "1.2.1"
+// 没有保存过 WiFi 时先试这一组；两次都连不上再开配网热点
+#define DEFAULT_STA_SSID "xiaohe"
+#define DEFAULT_STA_PASS "23456789"
+#define FW_VERSION      "1.3.0"
 #define NVS_NAMESPACE   "air8607"
-#define STA_MAX_RETRY   5
+#define STA_MAX_RETRY   1
 
 #define PHOTO_BASE      "http://img.he66.cn/api/photo"
 #define PHOTO_TIMEOUT_MS 30000
@@ -1123,6 +1126,18 @@ static void copy_cstr(uint8_t *dst, size_t dst_size, const char *src)
     dst[len] = '\0';
 }
 
+// C3 SuperMini 的板载天线阻抗匹配很差，20 dBm 满功率发射时包络失真：
+// 手机搜不到它开的热点，连路由器也会一直鉴权超时。降到 8.5 dBm 反而正常
+static void wifi_limit_tx_power(void)
+{
+    esp_err_t err = esp_wifi_set_max_tx_power(34);   // 34 * 0.25 = 8.5 dBm
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "set max tx power failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "WiFi max tx power limited to 8.5 dBm for SuperMini antenna");
+    }
+}
+
 static esp_err_t wifi_start_sta(const char *ssid, const char *pass)
 {
     wifi_config_t config = {0};
@@ -1149,6 +1164,7 @@ static esp_err_t wifi_start_sta(const char *ssid, const char *pass)
     if (err != ESP_OK) {
         return err;
     }
+    wifi_limit_tx_power();
 
     EventBits_t bits = xEventGroupWaitBits(
         s_wifi_events, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
@@ -1156,7 +1172,8 @@ static esp_err_t wifi_start_sta(const char *ssid, const char *pass)
     if (bits & WIFI_CONNECTED_BIT) {
         return ESP_OK;
     }
-    ESP_LOGE(TAG, "STA connect failed (ssid=%s)", ssid);
+    ESP_LOGE(TAG, "STA connect failed after %d attempts (ssid=%s)",
+             STA_MAX_RETRY + 1, ssid);
     return ESP_FAIL;
 }
 
@@ -1183,6 +1200,7 @@ static esp_err_t wifi_start_ap(void)
     if (err != ESP_OK) {
         return err;
     }
+    wifi_limit_tx_power();
 
     state_set_wifi(false, NULL, true);
     state_set_error("wifi_config_required");
@@ -1592,9 +1610,10 @@ void app_main(void)
     char ssid[33] = {0};
     char pass[65] = {0};
     if (!load_wifi_config(ssid, sizeof(ssid), pass, sizeof(pass))) {
-        ESP_LOGW(TAG, "no WiFi credentials; starting provisioning AP");
-        start_provisioning();
-        return;
+        copy_cstr((uint8_t *)ssid, sizeof(ssid), DEFAULT_STA_SSID);
+        copy_cstr((uint8_t *)pass, sizeof(pass), DEFAULT_STA_PASS);
+        ESP_LOGW(TAG, "no WiFi credentials saved; trying default %s",
+                 DEFAULT_STA_SSID);
     }
 
     ESP_LOGI(TAG, "connecting to WiFi SSID '%s'", ssid);
